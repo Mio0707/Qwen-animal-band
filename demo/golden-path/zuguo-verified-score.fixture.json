@@ -2083,10 +2083,10 @@
     }
   ],
   "source": {
-    "type": "qwen_score_recognition",
+    "type": "qwenwork_skill_score_inference",
     "reference": "recognition/raw.json",
     "humanReviewed": true,
-    "recognitionModel": "qwen3.7-plus",
+    "recognitionModel": "qwenwork-native",
     "recognizedAt": "2026-08-28T09:28:11.550201Z",
     "reviewedAt": "2026-08-28T09:51:22.489Z"
   },

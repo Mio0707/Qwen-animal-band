@@ -165,7 +165,6 @@ a { color:inherit; text-decoration:none; }
 .module-picks { display:flex; flex-wrap:wrap; gap:12px; }
 .learning-selection footer,.lesson-plan footer { margin-top:28px; display:flex; justify-content:flex-end; gap:10px; }
 .selection-empty { color:var(--muted); }
-.qwen-key-notice { margin:10px 0 0; padding:10px 12px; border-radius:10px; color:#8a4d28; background:#fff0dc; font-weight:700; }
 .lesson-flow { margin:24px 0; padding:0; display:grid; grid-template-columns:repeat(7,1fr); gap:8px; list-style:none; }
 .lesson-flow li { padding:12px 8px; display:grid; gap:7px; text-align:center; border-radius:14px; color:var(--muted); background:#f3eee5; font-size:12px; font-weight:900; }
 .lesson-flow li.active { color:#326a49; background:#e4f2e7; }

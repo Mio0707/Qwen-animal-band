@@ -3,7 +3,7 @@ import { refreshNotePitch } from "../../classroom/core/pitch-utils.js";
 import { lyricForNote, normalizeLyricContinuations, setNoteLyric, setNoteLyricContinuation } from "../../classroom/core/lyrics-alignment.js";
 import { canMarkReviewed, collectScoreIssues, markScoreEdited, transitionToReviewed, transitionToVerified } from "../../classroom/core/score-verification.js";
 import { createScoreMeasureAlignmentTool } from "./measure_alignment_tool.js";
-import { closeReviewSession, getQwenStatus, loadScore, loadSourceImage, markReviewed, recognizeLyrics as recognizeLyricsWithAdapter, saveDraft, verifyScore } from "./adapters/local_workspace_adapter.js";
+import { closeReviewSession, loadScore, loadSourceImage, markReviewed, saveDraft, verifyScore } from "./adapters/local_workspace_adapter.js";
 
 let score = null;
 let songId = null;
@@ -12,7 +12,6 @@ let returnPath = "/app/teacher/";
 let currentMeasureIndex = 0;
 let confirmedMeasures = new Set();
 let actionMessage = "";
-let lyricsRecognitionPending = false;
 let measureAlignmentTool = null;
 let measureAlignmentRequired = false;
 let measureAlignmentReady = true;
@@ -224,10 +223,6 @@ function render() {
   document.querySelector("#score-title").textContent = score.title;
   document.querySelector("#review-progress").textContent = `校对第 ${currentMeasureIndex + 1} / ${score.measures.length} 小节`;
   document.querySelector("#metadata").innerHTML = `<label>曲名<input data-meta="title" value="${escapeHtml(score.title)}"></label><label>1 = 主音<input data-meta="tonic" value="${escapeHtml(score.tonic)}"></label><label>拍号<input data-meta="meter.beats" type="number" min="1" max="12" value="${score.meter.beats}"></label><label>分母<select data-meta="meter.unit">${[2, 4, 8, 16].map((unit) => `<option ${unit === score.meter.unit ? "selected" : ""}>${unit}</option>`).join("")}</select></label><label>速度<input data-meta="bpm" type="number" min="36" max="240" value="${score.bpm}"> 拍/分钟</label><label>演唱教学分段<select data-meta="teachingConfig.singingMeasuresPerUnit"><option value="">请选择每几小节一段</option>${[1,2,3,4,5,6,7,8].map((count) => `<option value="${count}" ${count === Number(score.teachingConfig?.singingMeasuresPerUnit) ? "selected" : ""}>每 ${count} 小节一段</option>`).join("")}</select><small>由老师人工选择；系统只按选择结果机械分段，不判断乐句。</small></label>`;
-  const recognizeLyrics = document.querySelector("#recognize-lyrics");
-  recognizeLyrics.disabled = !songId || lyricsRecognitionPending;
-  recognizeLyrics.textContent = lyricsRecognitionPending ? "AI 正在匹配歌词…" : "↻ AI 重新匹配歌词";
-  recognizeLyrics.title = songId ? "重新读取原始简谱并匹配歌词，不修改音高与时值" : "当前页面未绑定歌曲";
   renderPreviewAndNavigation(); renderWarnings(); renderMeasureEditor(); renderStatus(); bindRenderedEvents();
   syncMeasureAlignmentTool();
 }
@@ -330,29 +325,6 @@ async function persistScore(successMessage) {
   return payload;
 }
 
-async function recognizeLyrics() {
-  if (lyricsRecognitionPending) return;
-  lyricsRecognitionPending = true;
-  renderStatus();
-  try {
-    await persistScore("当前修改已保存，正在匹配歌词…");
-    const payload = await recognizeLyricsWithAdapter(songId);
-    score = normalizeLyricContinuations(payload.score);
-    confirmedMeasures.clear();
-    persistConfirmedMeasures();
-    currentMeasureIndex = 0;
-    actionMessage = "AI 歌词已匹配，请逐音检查。";
-    render();
-  } catch (error) {
-    actionMessage = error.message;
-    render();
-    alert(`歌词匹配失败：${error.message}`);
-  } finally {
-    lyricsRecognitionPending = false;
-    renderStatus();
-  }
-}
-
 function measureReviewSignature(measure) {
   return JSON.stringify(measure.notes.map((note) => [note.degree, note.octave, note.duration, note.rest, note.lyric, note.lyricContinuation]));
 }
@@ -401,17 +373,6 @@ function bootstrap() {
     location.replace(teacherHome);
     return;
   }
-  getQwenStatus().then((status) => {
-    if (status.configured) return;
-    const notice = document.querySelector("#qwen-key-notice");
-    notice.textContent = status.message || "当前功能需要 Qwen API Key，请联系开发者使用。";
-    notice.hidden = false;
-    document.querySelector("#recognize-lyrics").disabled = true;
-  }).catch(() => {
-    const notice = document.querySelector("#qwen-key-notice");
-    notice.hidden = false;
-    document.querySelector("#recognize-lyrics").disabled = true;
-  });
   document.querySelector("#score-file").addEventListener("change", async (event) => {
     try {
       loadScoreDocument(JSON.parse(await event.target.files[0].text()));
@@ -425,7 +386,6 @@ function bootstrap() {
   document.querySelector("#next-measure").addEventListener("click", () => { currentMeasureIndex = Math.min(score.measures.length - 1, currentMeasureIndex + 1); render(); });
   document.querySelector("#preview-measure").addEventListener("click", previewCurrentMeasure);
   document.querySelector("#confirm-measure").addEventListener("click", confirmCurrentMeasure);
-  document.querySelector("#recognize-lyrics").addEventListener("click", recognizeLyrics);
   document.querySelector("#save-draft").addEventListener("click", () => persistScore("当前乐谱已保存到 Song。").catch((error) => { actionMessage = error.message; render(); }));
   document.querySelector("#mark-reviewed").addEventListener("click", async () => {
     const result = transitionToReviewed(score);

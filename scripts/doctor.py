@@ -11,16 +11,6 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
-
-def env_has_key() -> bool:
-    if str(os.environ.get("DASHSCOPE_API_KEY") or "").strip():
-        return True
-    path = ROOT / ".env"
-    if not path.is_file():
-        return False
-    return any(line.strip().startswith("DASHSCOPE_API_KEY=") and line.split("=", 1)[1].strip().strip("\"'") for line in path.read_text(encoding="utf-8").splitlines())
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
     python_ok = sys.version_info >= (3, 9)
@@ -46,7 +36,7 @@ def main() -> int:
         "ready": python_ok and bool(node_path) and all(path.is_file() for path in engine_files) and sampler_ok and all(path.is_file() for path in classroom_files) and all(path.is_file() for path in review_files) and all(path.is_dir() for path in workspace_dirs),
         "python": {"ok": python_ok, "version": sys.version.split()[0], "executable": sys.executable},
         "node": {"ok": bool(node_path), "version": node_version, "executable": node_path},
-        "qwen": {"configured": env_has_key(), "liveTest": "AVAILABLE" if env_has_key() else "SKIPPED", "message": None if env_has_key() else "请设置环境变量 DASHSCOPE_API_KEY，或在仓库根目录创建未纳入 Git 的 .env。"},
+        "inference": {"ok": True, "layer": "qwenwork_skill", "runtimeNetworkCalls": False, "apiKeyRequired": False},
         "engine": {"ok": all(path.is_file() for path in engine_files)},
         "sampler": {"ok": sampler_ok, "sampleCount": sampler_count, "path": "assets/web-sampler-v1/sample-library.json"},
         "classroom": {"ok": all(path.is_file() for path in classroom_files)},
@@ -57,7 +47,7 @@ def main() -> int:
         print(json.dumps(status, ensure_ascii=False))
     else:
         print("Animal Band 环境：" + ("READY" if status["ready"] else "NOT READY"))
-        for key in ("python", "node", "qwen", "engine", "sampler", "classroom", "review", "workspace"):
+        for key in ("python", "node", "inference", "engine", "sampler", "classroom", "review", "workspace"):
             print(f"- {key}: {json.dumps(status[key], ensure_ascii=False)}")
     return 0 if status["ready"] else 1
 

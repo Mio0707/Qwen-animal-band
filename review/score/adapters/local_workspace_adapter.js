@@ -20,10 +20,8 @@ export async function loadScore(songId) { return (await request(`/bridge/score?s
 export async function saveDraft(songId, score) { return request(`/bridge/score/draft?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(score) }); }
 export async function markReviewed(songId, score) { return request(`/bridge/score/reviewed?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(score) }); }
 export async function verifyScore(songId, score) { return request(`/bridge/score/verified?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(score) }); }
-export async function recognizeLyrics(songId) { return request(`/bridge/recognize-lyrics?songId=${encodeURIComponent(songId)}`, { method: "POST", body: "{}" }); }
 export async function loadSourceImage(songId) { return asset(`/bridge/source-image?songId=${encodeURIComponent(songId)}`); }
 export async function loadOriginalAudio(songId) { return asset(`/bridge/original-audio?songId=${encodeURIComponent(songId)}`); }
 export async function loadMeasureAlignment(songId) { return (await request(`/bridge/measure-alignment?songId=${encodeURIComponent(songId)}`)).alignment; }
 export async function saveMeasureAlignment(songId, alignment) { return (await request(`/bridge/measure-alignment?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(alignment) })).alignment; }
-export async function getQwenStatus() { return request("/bridge/qwen-status"); }
 export async function closeReviewSession() { return request("/bridge/close", { method: "POST", body: "{}" }); }

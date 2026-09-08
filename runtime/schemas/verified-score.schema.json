@@ -102,7 +102,7 @@
       "properties": {
         "type": {
           "enum": [
-            "qwen_score_recognition",
+            "qwenwork_skill_score_inference",
             "ai_recognition",
             "manual_entry",
             "imported_score"

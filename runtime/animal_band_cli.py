@@ -28,8 +28,8 @@ from listening_warmup_generator import generate_listening_body_plan  # noqa: E40
 from repositories.persistence_utils import atomic_write_json, read_json, utc_now  # noqa: E402
 from repositories.preparation_repository import PreparationRepository  # noqa: E402
 from repositories.song_repository import SongRepository  # noqa: E402
-from score_recognition.qwen_score_recognizer import run_recognition  # noqa: E402
-from sticker_arrangement_generator import generate_sticker_stem_plan  # noqa: E402
+from score_recognition.skill_score_importer import run_recognition  # noqa: E402
+from sticker_arrangement_generator import arrangement_prompt, generate_sticker_stem_plan, normalize_arrangement_plan, validate_arrangement_plan  # noqa: E402
 
 ACTIVITIES = ("listen", "melody_trace", "rhythm_learning", "singing", "ensemble", "sticker_arrangement")
 
@@ -107,9 +107,9 @@ def command_recognize(args: argparse.Namespace) -> dict:
         raise CliError("SOURCE_FILE_MISSING", "简谱图片或歌曲音频不存在。")
     songs, _ = repositories()
     song = songs.create_song(args.title, "stage_1", {}, (audio.name, audio.read_bytes()), (score_image.name, score_image.read_bytes()))
-    raw_input = Path(args.raw_input).expanduser().resolve() if args.raw_input else None
+    inference_input = Path(args.inference_input).expanduser().resolve()
     try:
-        score = run_recognition(score_image, song["songId"], WORKSPACE / "songs", title=args.title, raw_input=raw_input)
+        score = run_recognition(score_image, song["songId"], WORKSPACE / "songs", title=args.title, raw_input=inference_input)
         songs.save_score(song["songId"], score)
     except Exception:
         shutil.rmtree(WORKSPACE / "songs" / song["songId"], ignore_errors=True)
@@ -280,6 +280,36 @@ def command_alignment(args: argparse.Namespace) -> dict:
     return {"preparationId": args.preparation_id, "measureAlignment": alignment}
 
 
+def command_arrangement_context(args: argparse.Namespace) -> dict:
+    songs, _ = repositories()
+    score = require_verified_score(songs, args.song_id)
+    return {
+        "songId": args.song_id,
+        "sourceScoreVerifiedAt": score.get("verifiedAt"),
+        "inferenceLayer": "qwenwork_skill",
+        "prompt": arrangement_prompt(score),
+    }
+
+
+def command_import_arrangement(args: argparse.Namespace) -> dict:
+    songs, preparations = repositories()
+    score = require_verified_score(songs, args.song_id)
+    raw = read_json(Path(args.plan_json).expanduser().resolve())
+    validate_arrangement_plan(raw, score)
+    plan = normalize_arrangement_plan(raw, score)
+    artifact = {
+        "schemaVersion": "1.0.0",
+        "songId": args.song_id,
+        "sourceScoreVerifiedAt": score.get("verifiedAt"),
+        "inferenceLayer": "qwenwork_skill",
+        "plan": plan,
+        "importedAt": utc_now(),
+    }
+    songs.save_artifact(args.song_id, "sticker-arrangement-plan.json", artifact)
+    preparations.invalidate_readiness_for_song(args.song_id)
+    return artifact
+
+
 def default_sticker_arrangement(preparation: dict, recipe: dict) -> dict:
     activity = next((item for item in recipe.get("activities", []) if item.get("type") == "sticker_arrangement"), None)
     segments = deepcopy(activity.get("bindings", {}).get("lessonSegments", []) if activity else [])
@@ -305,7 +335,12 @@ def command_prepare(args: argparse.Namespace) -> dict:
     listening = generate_listening_body_plan(song, score)
     gestures = read_json(RUNTIME / "gestures" / "gesture-library.json")
     trace = node_pipeline("melody-trace-plan", {"score": score, "alignment": alignment, "gestureLibrary": gestures})
-    event_pack = generate_sticker_stem_plan(score, require_qwen=False)
+    sticker_selected = any(item.get("type") == "sticker_arrangement" for item in recipe.get("activities", []))
+    arrangement_artifact = songs.get_artifact(preparation["songId"], "sticker-arrangement-plan.json")
+    if sticker_selected and (not arrangement_artifact or arrangement_artifact.get("sourceScoreVerifiedAt") != score.get("verifiedAt")):
+        raise CliError("ARRANGEMENT_INFERENCE_REQUIRED", "请先由 QwenWork 生成 Arrangement Plan，再运行 import-arrangement-plan。")
+    raw_plan = arrangement_artifact.get("plan") if arrangement_artifact else None
+    event_pack = generate_sticker_stem_plan(score, raw_plan=raw_plan)
     event_pack["totalBeats"] = event_pack["measureCount"] * (float(event_pack["meter"].get("beats", 4)) * 4 / float(event_pack["meter"].get("unit", 4)))
     event_pack["readinessMode"] = "QWENWORK_LOCAL_CLI_WEB_AUDIO_V2"
     songs.save_artifact(preparation["songId"], "listening-body-plan.json", listening)
@@ -365,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = JsonParser(prog="animal_band_cli.py")
     subs = parser.add_subparsers(dest="command", required=True, parser_class=JsonParser)
     subs.add_parser("doctor").set_defaults(handler=command_doctor)
-    p = subs.add_parser("recognize-score"); p.add_argument("--score-image", required=True); p.add_argument("--audio", required=True); p.add_argument("--title", required=True); p.add_argument("--raw-input"); p.set_defaults(handler=command_recognize)
+    p = subs.add_parser("recognize-score"); p.add_argument("--score-image", required=True); p.add_argument("--audio", required=True); p.add_argument("--title", required=True); p.add_argument("--inference-input", required=True); p.set_defaults(handler=command_recognize)
     p = subs.add_parser("update-score"); p.add_argument("--song-id", required=True); p.add_argument("--score-json", required=True); p.set_defaults(handler=command_update_score)
     p = subs.add_parser("verify-score"); p.add_argument("--song-id", required=True); p.add_argument("--confirmed", required=True, type=bool_value); p.add_argument("--reviewer", default="teacher"); p.set_defaults(handler=command_verify_score)
     p = subs.add_parser("score-status"); p.add_argument("--song-id", required=True); p.set_defaults(handler=command_score_status)
@@ -374,6 +409,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = subs.add_parser("generate-recipe"); p.add_argument("--song-id", required=True); p.add_argument("--activities", required=True); p.add_argument("--new", action="store_true"); p.set_defaults(handler=command_generate_recipe)
     p = subs.add_parser("confirm-recipe"); p.add_argument("--preparation-id", required=True); p.add_argument("--confirmed", required=True, type=bool_value); p.add_argument("--reviewer", default="teacher"); p.set_defaults(handler=command_confirm_recipe)
     p = subs.add_parser("set-measure-alignment"); p.add_argument("--preparation-id", required=True); p.add_argument("--start-measure", required=True, type=int); p.add_argument("--end-measure", required=True, type=int); p.add_argument("--start-sec", required=True, type=float); p.add_argument("--end-sec", required=True, type=float); p.set_defaults(handler=command_alignment)
+    p = subs.add_parser("arrangement-context"); p.add_argument("--song-id", required=True); p.set_defaults(handler=command_arrangement_context)
+    p = subs.add_parser("import-arrangement-plan"); p.add_argument("--song-id", required=True); p.add_argument("--plan-json", required=True); p.set_defaults(handler=command_import_arrangement)
     p = subs.add_parser("prepare-classroom"); p.add_argument("--preparation-id", required=True); p.set_defaults(handler=command_prepare)
     p = subs.add_parser("check-readiness"); p.add_argument("--preparation-id", required=True); p.set_defaults(handler=command_readiness)
     p = subs.add_parser("export-classroom"); p.add_argument("--preparation-id", required=True); p.set_defaults(handler=command_export)

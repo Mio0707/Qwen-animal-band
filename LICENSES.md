@@ -10,15 +10,20 @@ Animal Band 自有代码由仓库权利人保留权利。目标 GitHub 仓库应
 
 ## MuseScore_General rendering source
 
-Sampler 的渲染来源标记为 `MuseScore_General.sf3`。SoundFont 本体、FluidSynth 和任何 SoundFont 安装文件均未进入本仓库。
+Sampler 由 `MuseScore_General.sf3` 0.2.0 渲染。构建记录中的 SHA256
+`5b85b6c2c61d10b2b91cddd41efcce7b25cd31c8271d511c73afafbef20b6fa3`
+与 MuseScore 官方镜像中的文件完全一致。SoundFont 本体、FluidSynth 和任何
+SoundFont 安装文件均未进入本仓库。
 
-当前材料中没有足够许可证据确认渲染样本可公开或商业再分发，因此状态为：
+MuseScore 官方随附许可将 MuseScore_General 以 MIT License 发布，允许使用、
+修改与分发，但要求保留版权声明和许可文本。本仓库在
+`assets/web-sampler-v1/LICENSE.md` 中保留完整声明与致谢。
+
+状态：
 
 ```text
-LICENSE_REVIEW_REQUIRED
+PASS
 ```
-
-在许可复核完成前，不应把 Sampler 公开发布或用于商业分发。详情见 `assets/web-sampler-v1/LICENSE_REPORT.md`。
 
 ## User content
 

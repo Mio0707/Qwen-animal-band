@@ -73,7 +73,10 @@ def main() -> int:
         check("Python imports", CLI.is_file() and (ROOT / "runtime" / "repositories" / "song_repository.py").is_file())
         node = os.environ.get("ANIMAL_BAND_NODE") or shutil.which("node")
         check("Node available", bool(node), "请安装 Node.js 或设置 ANIMAL_BAND_NODE")
-        check("Qwen adapter import", (ROOT / "runtime" / "score_recognition" / "qwen_score_recognizer.py").is_file())
+        check("QwenWork inference importer", (ROOT / "runtime" / "score_recognition" / "skill_score_importer.py").is_file())
+        runtime_sources = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "runtime").rglob("*.py"))
+        forbidden_credentials = ("DASH" + "SCOPE_API_KEY", "Author" + "ization\": f\"Bearer")
+        check("Runtime has no model API key dependency", all(value not in runtime_sources for value in forbidden_credentials))
         curriculum = json.loads((ROOT / "runtime" / "curriculum" / "stage1.json").read_text(encoding="utf-8"))
         check("Curriculum load", curriculum.get("stage_id") == "stage_1")
         library = json.loads((ROOT / "assets" / "web-sampler-v1" / "sample-library.json").read_text(encoding="utf-8"))
@@ -97,7 +100,8 @@ def main() -> int:
             image = temp / "score.png"
             image.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
             audio = temp / "audio.mp3"; audio.write_bytes(b"ID3")
-            recognized = call("recognize-score", "--score-image", str(image), "--audio", str(audio), "--title", "祖国祖国我们爱你 Smoke", "--raw-input", str(ROOT / "demo" / "golden-path" / "recognition-raw.fixture.json"))
+            recognized = call("recognize-score", "--score-image", str(image), "--audio", str(audio), "--title", "祖国祖国我们爱你 Smoke", "--inference-input", str(ROOT / "demo" / "golden-path" / "recognition-raw.fixture.json"))
+            check("QwenWork score inference stays draft", recognized["data"]["draftScore"]["verificationStatus"] == "draft")
             generated_song = recognized["data"]["song"]["songId"]
             call("update-score", "--song-id", generated_song, "--score-json", str(ROOT / "demo" / "golden-path" / "zuguo-verified-score.fixture.json"))
             gate = call("verify-score", "--song-id", generated_song, "--confirmed", "false", expect_ok=False)
@@ -154,10 +158,26 @@ def main() -> int:
             gate = call("confirm-recipe", "--preparation-id", generated_preparation, "--confirmed", "false", expect_ok=False)
             check("Recipe human gate", gate["error"]["code"] == "HUMAN_CONFIRMATION_REQUIRED")
             call("confirm-recipe", "--preparation-id", generated_preparation, "--confirmed", "true", "--reviewer", "smoke-test")
+            arrangement_gate = call("prepare-classroom", "--preparation-id", generated_preparation, expect_ok=False)
+            check("Arrangement inference gate", arrangement_gate["error"]["code"] == "ARRANGEMENT_INFERENCE_REQUIRED")
+            context = call("arrangement-context", "--song-id", generated_song)
+            check("Arrangement inference runs in Skill layer", context["data"]["inferenceLayer"] == "qwenwork_skill")
+            verified_score = json.loads((ROOT / "workspace" / "songs" / generated_song / "verified-score.json").read_text(encoding="utf-8"))
+            measure_numbers = [int(item["number"]) for item in verified_score["measures"]]
+            arrangement_input = {
+                "harmony": [{"measure": number, "degree": 1, "quality": "major"} for number in measure_numbers],
+                "measurePlans": [{"measure": number, "drums": "light", "keys": "hold", "bass": "root", "sax": "melody"} for number in measure_numbers],
+                "notes": ["offline contract fixture"],
+            }
+            arrangement_path = temp / "arrangement-inference.json"
+            arrangement_path.write_text(json.dumps(arrangement_input, ensure_ascii=False), encoding="utf-8")
+            imported_arrangement = call("import-arrangement-plan", "--song-id", generated_song, "--plan-json", str(arrangement_path))
+            check("Arrangement inference import", imported_arrangement["data"]["inferenceLayer"] == "qwenwork_skill")
             status_after_review = call("score-status", "--song-id", generated_song)
             check("Golden score review status", status_after_review["data"]["measureAlignmentReady"] is True)
             prepared = call("prepare-classroom", "--preparation-id", generated_preparation)
             tracks = prepared["data"]["arrangementEventPack"]["tracks"]
+            check("Arrangement compiler uses imported plan", prepared["data"]["arrangementEventPack"]["generator"]["type"] == "qwenwork_skill_arrangement")
             check("Sticker Event JSON has four tracks", [track["trackId"] for track in tracks] == ["dog", "bear", "cat", "lion"] and all(isinstance(track.get("events"), list) for track in tracks))
             readiness = call("check-readiness", "--preparation-id", generated_preparation)
             check("WEB_SAMPLER_READY", any(item["id"] == "WEB_SAMPLER_READY" and item["ok"] for item in readiness["data"]["readiness"]["checks"]))
@@ -165,12 +185,13 @@ def main() -> int:
             exported = call("export-classroom", "--preparation-id", generated_preparation)
             export_dir = Path(exported["data"]["directory"])
             check("Static export basic fixture", (export_dir / "index.html").is_file() and (export_dir / "offline" / "session.json").is_file())
+            check("Static classroom visual assets", (export_dir / "app" / "content-factory" / "assets" / "avatar-dog.png").is_file())
             check("Static classroom serverless", "/api/classroom/sessions" not in (export_dir / "offline" / "session.json").read_text(encoding="utf-8"))
 
         print("Animal Band release smoke test")
         for name, ok, detail in RESULTS:
             print(f"[{'PASS' if ok else 'FAIL'}] {name}{f': {detail}' if detail else ''}")
-        print("QWEN_LIVE_TEST = " + ("AVAILABLE" if os.environ.get("DASHSCOPE_API_KEY") else "SKIPPED"))
+        print("INFERENCE_LAYER = QWENWORK_SKILL")
         print(f"PASS ({len(RESULTS)} checks)")
         return 0
     except Exception as error:

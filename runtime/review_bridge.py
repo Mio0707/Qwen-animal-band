@@ -23,7 +23,6 @@ for candidate in (ROOT, RUNTIME, RUNTIME / "score_recognition"):
 from repositories.persistence_utils import atomic_write_json, read_json, utc_now  # noqa: E402
 from repositories.preparation_repository import PreparationRepository  # noqa: E402
 from repositories.song_repository import SongRepository  # noqa: E402
-from score_recognition.qwen_score_recognizer import qwen_configuration_status, run_lyrics_recognition  # noqa: E402
 
 MAX_BODY = 4 * 1024 * 1024
 SONG_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
@@ -134,9 +133,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(403, error="Review session token 无效。", code="TOKEN_REQUIRED"); return
         self.server.last_activity = time.monotonic()
         try:
-            song_id = self._song_id(query) if path not in {"/bridge/status", "/bridge/qwen-status"} else self.server.song_id
+            song_id = self._song_id(query) if path != "/bridge/status" else self.server.song_id
             if path == "/bridge/status": self._json(200, {"running": True, "songId": song_id, "loopbackOnly": True})
-            elif path == "/bridge/qwen-status": self._json(200, qwen_configuration_status())
             elif path == "/bridge/score": self._json(200, {"score": self.server.songs.get_score(song_id)})
             elif path == "/bridge/measure-alignment": self._json(200, {"alignment": self.server.songs.get_artifact(song_id, "measure-alignment.json")})
             elif path == "/bridge/source-image": self._media(song_id, "scoreImage")
@@ -191,16 +189,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/bridge/close":
                 self.server.stop_requested = True; self._json(200, {"closed": True}); return
-            song_id = self._song_id(query)
-            if path == "/bridge/recognize-lyrics":
-                song = self.server.songs.get_song_by_id(song_id); score = self.server.songs.get_score(song_id)
-                public = song.get("assets", {}).get("scoreImage")
-                image = (ROOT / "workspace" / str(public).removeprefix("data/")).resolve()
-                song_root = (ROOT / "workspace" / "songs" / song_id).resolve()
-                if song_root not in image.parents or not image.is_file(): raise ValueError("原始简谱图片不存在。")
-                updated = run_lyrics_recognition(image, song_id, ROOT / "workspace" / "songs", score)
-                self.server.songs.save_score(song_id, updated); self.server.preparations.invalidate_for_song(song_id)
-                self._json(200, {"score": updated}); return
             raise FileNotFoundError("Endpoint 不存在。")
         except FileNotFoundError as error: self._json(404, error=str(error), code="NOT_FOUND")
         except Exception as error: self._json(400, error=str(error), code="BRIDGE_OPERATION_FAILED")

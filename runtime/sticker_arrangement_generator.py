@@ -1,33 +1,18 @@
 """Generate a four-stem Animal Bank arrangement from a verified score.
 
 Formal path:
-verified score -> Qwen shared arrangement plan -> deterministic four-track compiler.
+verified score -> QwenWork Skill shared arrangement plan -> deterministic four-track compiler.
 
-Qwen does not independently invent four unrelated parts. It plans shared harmony
+QwenWork does not independently invent four unrelated parts. It plans shared harmony
 and per-measure roles once; the local compiler then guarantees common BPM,
-meter, measure boundaries and harmonic constraints. If Qwen is unavailable, a
-score-derived deterministic fallback keeps the demo usable and records that fact
-in generator metadata.
+meter, measure boundaries and harmonic constraints. The runtime never calls a
+model API and never reads an API key. A score-derived deterministic fallback
+keeps offline tests usable and records that fact in generator metadata.
 """
 from __future__ import annotations
 
 from copy import deepcopy
 import json
-import os
-from pathlib import Path
-import socket
-import sys
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-
-ROOT = Path(__file__).resolve().parent
-ADAPTER_DIR = ROOT / "score_recognition"
-if str(ADAPTER_DIR) not in sys.path:
-    sys.path.insert(0, str(ADAPTER_DIR))
-from qwen_score_recognizer import QWEN_API_KEY_REQUIRED_MESSAGE, load_dotenv, parse_model_json, resolve_api_url  # noqa: E402
-
-DEFAULT_MODEL = "qwen3.8-flash"
-DEFAULT_TIMEOUT = 180
 TRACK_ORDER = ("dog", "bear", "cat", "lion")
 TRACK_META = {
     "dog": {"label": "小狗", "instrument": "drums", "role": "鼓组", "program": None, "channel": 9},
@@ -159,40 +144,25 @@ Verified Score：
 {compact}"""
 
 
-def _request_qwen_plan(score: dict, model: str) -> dict:
-    load_dotenv()
-    api_key = os.environ.get("DASHSCOPE_API_KEY")
-    if not api_key:
-        raise ValueError(QWEN_API_KEY_REQUIRED_MESSAGE)
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "你只返回严格 JSON。"},
-            {"role": "user", "content": arrangement_prompt(score)},
-        ],
-        "temperature": 0.15,
-        "enable_thinking": False,
-        "max_tokens": int(os.environ.get("STICKER_ARRANGEMENT_MAX_OUTPUT_TOKENS", "8192")),
-        "stream": False,
-    }
-    request = Request(
-        resolve_api_url(),
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    timeout = float(os.environ.get("STICKER_ARRANGEMENT_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT)))
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            response_json = json.loads(response.read().decode("utf-8"))
-        return parse_model_json(response_json["choices"][0]["message"]["content"])
-    except HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise ValueError(f"Qwen 编配服务错误（{error.code}）：{detail[:240]}") from error
-    except (socket.timeout, TimeoutError) as error:
-        raise ValueError("Qwen 编配请求超时") from error
-    except (URLError, KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-        raise ValueError(f"Qwen 编配结果无法读取：{error}") from error
+def validate_arrangement_plan(raw: dict, score: dict) -> None:
+    if not isinstance(raw, dict):
+        raise ValueError("Arrangement inference 必须是 JSON 对象。")
+    expected = [int(item["number"]) for item in _measures(score)]
+    harmony = raw.get("harmony")
+    plans = raw.get("measurePlans")
+    if not isinstance(harmony, list) or not isinstance(plans, list):
+        raise ValueError("Arrangement inference 缺少 harmony 或 measurePlans。")
+    harmony_numbers = [int(item.get("measure", -1)) for item in harmony if isinstance(item, dict)]
+    plan_numbers = [int(item.get("measure", -1)) for item in plans if isinstance(item, dict)]
+    if sorted(harmony_numbers) != expected or sorted(plan_numbers) != expected:
+        raise ValueError("Arrangement inference 必须逐小节完整覆盖 Verified Score。")
+    for item in harmony:
+        if int(item.get("degree", 0)) not in {1, 4, 5, 6} or str(item.get("quality")) not in {"major", "minor"}:
+            raise ValueError("Arrangement harmony 只能使用 1/4/5/6 级与 major/minor。")
+    allowed = {"drums": {"light", "full"}, "keys": {"hold", "pulse"}, "bass": {"root", "root_fifth"}, "sax": {"melody", "rest"}}
+    for item in plans:
+        if any(str(item.get(field)) not in values for field, values in allowed.items()):
+            raise ValueError("Arrangement measurePlans 包含无效角色值。")
 
 
 def normalize_arrangement_plan(raw: dict, score: dict) -> dict:
@@ -314,27 +284,20 @@ def _compile_tracks(score: dict, plan: dict) -> dict[str, dict]:
     return tracks
 
 
-def generate_sticker_stem_plan(score: dict, model: str | None = None, require_qwen: bool = False) -> dict:
+def generate_sticker_stem_plan(score: dict, raw_plan: dict | None = None) -> dict:
     if score.get("verificationStatus") != "verified":
         raise ValueError("动物贴纸四轨生成只接受已人工确认的 Verified Score。")
     if not _measures(score):
         raise ValueError("Verified Score 没有可用小节。")
     if not isinstance(score.get("bpm"), (int, float)) or float(score["bpm"]) <= 0:
         raise ValueError("Verified Score 缺少有效 BPM。")
-    model = model or os.environ.get("STICKER_ARRANGEMENT_MODEL") or DEFAULT_MODEL
-    fallback_reason = None
-    raw = None
-    try:
-        raw = _request_qwen_plan(score, model)
-        normalized = normalize_arrangement_plan(raw, score)
-        generator = {"type": "qwen_shared_arrangement", "model": model, "fallback": False}
-    except Exception as error:
-        if require_qwen or os.environ.get("STICKER_REQUIRE_QWEN") == "1":
-            raise
-        fallback_reason = str(error)
+    if raw_plan is None:
         normalized = deterministic_arrangement_plan(score)
         normalized = normalize_arrangement_plan(normalized, score)
-        generator = {"type": "score_derived_fallback", "model": model, "fallback": True, "reason": fallback_reason}
+        generator = {"type": "score_derived_fallback", "inferenceLayer": "none", "fallback": True}
+    else:
+        normalized = normalize_arrangement_plan(raw_plan, score)
+        generator = {"type": "qwenwork_skill_arrangement", "inferenceLayer": "qwenwork_skill", "fallback": False}
     tracks = _compile_tracks(score, normalized)
     return {
         "schemaVersion": "1.0.0",

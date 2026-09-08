@@ -71,12 +71,12 @@ def normalize_score(
     source_reference: str,
     *,
     title: str | None = None,
-    model: str = "qwen3.8-flash",
+    model: str = "qwenwork-native",
     recognized_at: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(candidate, dict):
-        raise ValueError("Qwen 没有返回有效的乐谱对象。")
+        raise ValueError("QwenWork inference 没有返回有效的乐谱对象。")
 
     warnings: list[dict[str, str]] = []
     meter, expected_measure_beats = normalize_meter(candidate.get("meter"), warnings)
@@ -208,7 +208,7 @@ def normalize_score(
         "lyricsText": lyrics_text or None,
         "measures": measures,
         "source": {
-            "type": "qwen_score_recognition",
+            "type": "qwenwork_skill_score_inference",
             "reference": source_reference,
             "humanReviewed": False,
             "recognitionModel": model,
@@ -224,12 +224,12 @@ def normalize_score(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Normalize a raw Qwen numbered-score JSON file.")
+    parser = argparse.ArgumentParser(description="Normalize a raw QwenWork numbered-score inference JSON file.")
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--song-id", required=True)
     parser.add_argument("--source-reference", default="recognition/raw.json")
     parser.add_argument("--title")
-    parser.add_argument("--model", default="qwen3.8-flash")
+    parser.add_argument("--model", default="qwenwork-native")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     candidate = json.loads(args.input.read_text(encoding="utf-8"))

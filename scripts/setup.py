@@ -23,8 +23,6 @@ def main() -> int:
     smoke = subprocess.run([sys.executable, str(ROOT / "scripts" / "smoke_test.py")], cwd=ROOT)
     if smoke.returncode != 0:
         return smoke.returncode
-    if not status["qwen"]["configured"]:
-        print("提示：在线识谱前请设置 DASHSCOPE_API_KEY；不要把 Key 提交到 Git。", file=sys.stderr)
     print("ANIMAL_BAND_READY")
     return 0
 
