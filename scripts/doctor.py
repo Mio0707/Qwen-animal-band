@@ -3,19 +3,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "runtime") not in sys.path:
+    sys.path.insert(0, str(ROOT / "runtime"))
+
+from node_runtime import resolve_node  # noqa: E402
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
     python_ok = sys.version_info >= (3, 9)
-    configured_node = str(os.environ.get("ANIMAL_BAND_NODE") or "").strip()
-    node_path = configured_node if configured_node and Path(configured_node).is_file() else shutil.which("node")
+    node_path = resolve_node()
     node_version = None
     if node_path:
         node_version = subprocess.run([node_path, "--version"], text=True, capture_output=True).stdout.strip()
@@ -35,7 +37,7 @@ def main() -> int:
     status = {
         "ready": python_ok and bool(node_path) and all(path.is_file() for path in engine_files) and sampler_ok and all(path.is_file() for path in classroom_files) and all(path.is_file() for path in review_files) and all(path.is_dir() for path in workspace_dirs),
         "python": {"ok": python_ok, "version": sys.version.split()[0], "executable": sys.executable},
-        "node": {"ok": bool(node_path), "version": node_version, "executable": node_path},
+        "node": {"ok": bool(node_path), "version": node_version, "executable": node_path, "autoDiscovered": bool(node_path)},
         "inference": {"ok": True, "layer": "qwenwork_skill", "runtimeNetworkCalls": False, "apiKeyRequired": False},
         "engine": {"ok": all(path.is_file() for path in engine_files)},
         "sampler": {"ok": sampler_ok, "sampleCount": sampler_count, "path": "assets/web-sampler-v1/sample-library.json"},
