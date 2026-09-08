@@ -32,6 +32,9 @@ from score_recognition.skill_score_importer import run_recognition  # noqa: E402
 from sticker_arrangement_generator import arrangement_prompt, generate_sticker_stem_plan, normalize_arrangement_plan, validate_arrangement_plan  # noqa: E402
 
 ACTIVITIES = ("listen", "melody_trace", "rhythm_learning", "singing", "ensemble", "sticker_arrangement")
+SCORE_ONLY_ACTIVITIES = ("rhythm_learning", "singing", "sticker_arrangement")
+RESOURCE_MODE_SCORE_ONLY = "SCORE_ONLY"
+RESOURCE_MODE_SCORE_AUDIO = "SCORE_AUDIO"
 
 
 class CliError(RuntimeError):
@@ -94,6 +97,26 @@ def require_verified_score(repo: SongRepository, song_id: str) -> dict:
     return score
 
 
+def resource_mode(song: dict) -> str:
+    return RESOURCE_MODE_SCORE_AUDIO if song.get("assets", {}).get("originalAudio") else RESOURCE_MODE_SCORE_ONLY
+
+
+def available_activities(song: dict) -> list[str]:
+    return list(ACTIVITIES if resource_mode(song) == RESOURCE_MODE_SCORE_AUDIO else SCORE_ONLY_ACTIVITIES)
+
+
+def resource_summary(song: dict) -> dict:
+    available = available_activities(song)
+    return {
+        "resourceMode": resource_mode(song),
+        "hasScoreImage": bool(song.get("assets", {}).get("scoreImage")),
+        "hasOriginalAudio": bool(song.get("assets", {}).get("originalAudio")),
+        "availableActivities": available,
+        "lockedActivities": [item for item in ACTIVITIES if item not in available],
+        "canUpgradeWithAudio": resource_mode(song) == RESOURCE_MODE_SCORE_ONLY,
+    }
+
+
 def command_doctor(_: argparse.Namespace) -> dict:
     result = subprocess.run([sys.executable, str(ROOT / "scripts" / "doctor.py"), "--json"], text=True, capture_output=True, cwd=ROOT)
     if result.returncode not in (0, 1):
@@ -102,19 +125,56 @@ def command_doctor(_: argparse.Namespace) -> dict:
 
 
 def command_recognize(args: argparse.Namespace) -> dict:
-    score_image, audio = Path(args.score_image).expanduser().resolve(), Path(args.audio).expanduser().resolve()
-    if not score_image.is_file() or not audio.is_file():
-        raise CliError("SOURCE_FILE_MISSING", "简谱图片或歌曲音频不存在。")
-    songs, _ = repositories()
-    song = songs.create_song(args.title, "stage_1", {}, (audio.name, audio.read_bytes()), (score_image.name, score_image.read_bytes()))
+    score_image = Path(args.score_image).expanduser().resolve()
+    if not score_image.is_file():
+        raise CliError("SOURCE_FILE_MISSING", "简谱图片不存在。")
+    audio_tuple = None
+    if args.audio:
+        audio = Path(args.audio).expanduser().resolve()
+        if not audio.is_file():
+            raise CliError("SOURCE_FILE_MISSING", "歌曲音频不存在。")
+        audio_tuple = (audio.name, audio.read_bytes())
     inference_input = Path(args.inference_input).expanduser().resolve()
+    if not inference_input.is_file():
+        raise CliError("INFERENCE_INPUT_MISSING", "QwenWork 识谱 inference JSON 不存在。")
+    songs, _ = repositories()
+    song = songs.create_song(
+        args.title,
+        "stage_1",
+        {"resourceMode": RESOURCE_MODE_SCORE_AUDIO if audio_tuple else RESOURCE_MODE_SCORE_ONLY},
+        audio_tuple,
+        (score_image.name, score_image.read_bytes()),
+    )
     try:
         score = run_recognition(score_image, song["songId"], WORKSPACE / "songs", title=args.title, raw_input=inference_input)
         songs.save_score(song["songId"], score)
     except Exception:
         shutil.rmtree(WORKSPACE / "songs" / song["songId"], ignore_errors=True)
         raise
-    return {"song": songs.get_song_by_id(song["songId"]), "draftScore": score, "humanReviewRequired": True}
+    current_song = songs.get_song_by_id(song["songId"])
+    return {
+        "song": current_song,
+        "draftScore": score,
+        "humanReviewRequired": True,
+        **resource_summary(current_song),
+    }
+
+
+def command_add_audio(args: argparse.Namespace) -> dict:
+    audio = Path(args.audio).expanduser().resolve()
+    if not audio.is_file():
+        raise CliError("SOURCE_FILE_MISSING", "歌曲音频不存在。")
+    songs, preparations = repositories()
+    require_song(songs, args.song_id)
+    song = songs.save_original_audio(args.song_id, (audio.name, audio.read_bytes()))
+    songs.delete_artifact(args.song_id, "measure-alignment.json")
+    preparations.invalidate_readiness_for_song(args.song_id)
+    return {
+        "song": song,
+        **resource_summary(song),
+        "measureAlignmentRequired": True,
+        "message": "歌曲已升级为简谱 + 音频完整模式，请在简谱检查面板完成原曲小节校准。",
+    }
 
 
 def command_update_score(args: argparse.Namespace) -> dict:
@@ -153,13 +213,14 @@ def command_verify_score(args: argparse.Namespace) -> dict:
 
 def command_score_status(args: argparse.Namespace) -> dict:
     songs, _ = repositories()
-    require_song(songs, args.song_id)
+    song = require_song(songs, args.song_id)
     score = songs.get_score(args.song_id)
     if not score:
         raise CliError("SCORE_NOT_FOUND", "歌曲尚无可用简谱。")
     alignment = songs.get_artifact(args.song_id, "measure-alignment.json")
     calibration = (alignment or {}).get("calibration") or {}
-    alignment_ready = bool(
+    has_audio = bool(song.get("assets", {}).get("originalAudio"))
+    actual_alignment_ready = bool(
         alignment
         and alignment.get("sourceScoreVerifiedAt") == score.get("verifiedAt")
         and float(calibration.get("startSec", -1)) >= 0
@@ -168,14 +229,16 @@ def command_score_status(args: argparse.Namespace) -> dict:
     return {
         "songId": args.song_id,
         "verificationStatus": score.get("verificationStatus"),
-        "measureAlignmentReady": alignment_ready,
+        "measureAlignmentRequired": has_audio,
+        "measureAlignmentReady": actual_alignment_ready if has_audio else True,
+        **resource_summary(song),
         "warnings": score.get("warnings", []),
     }
 
 
 def command_open_score_review(args: argparse.Namespace) -> dict:
     songs, _ = repositories()
-    require_song(songs, args.song_id)
+    song = require_song(songs, args.song_id)
     session_id = uuid4().hex
     token = secrets.token_urlsafe(32)
     port_file = Path(tempfile.gettempdir()) / f"animal-band-review-{session_id}.json"
@@ -190,20 +253,30 @@ def command_open_score_review(args: argparse.Namespace) -> dict:
         if process.poll() is not None:
             break
         if port_file.is_file():
-            try: port = int(json.loads(port_file.read_text(encoding="utf-8"))["port"]); break
-            except Exception: pass
+            try:
+                port = int(json.loads(port_file.read_text(encoding="utf-8"))["port"])
+                break
+            except Exception:
+                pass
         time.sleep(0.05)
     if not port:
-        if process.poll() is None: process.terminate()
+        if process.poll() is None:
+            process.terminate()
         raise CliError("REVIEW_BRIDGE_START_FAILED", "专业简谱校对面板启动失败。")
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=idle_timeout)).isoformat().replace("+00:00", "Z")
     review_url = f"http://127.0.0.1:{port}/review/score/?songId={quote(args.song_id)}&token={quote(token)}&mode=teacher"
-    return {"reviewUrl": review_url, "sessionId": session_id, "expiresAt": expires_at, "loopbackOnly": True}
+    return {
+        "reviewUrl": review_url,
+        "sessionId": session_id,
+        "expiresAt": expires_at,
+        "loopbackOnly": True,
+        **resource_summary(song),
+    }
 
 
 def command_analyze(args: argparse.Namespace) -> dict:
     songs, preparations = repositories()
-    require_song(songs, args.song_id)
+    song = require_song(songs, args.song_id)
     score = require_verified_score(songs, args.song_id)
     curriculum = read_json(RUNTIME / "curriculum" / "stage1.json")
     match = node_pipeline("match", {"score": score, "curriculum": curriculum})
@@ -212,23 +285,35 @@ def command_analyze(args: argparse.Namespace) -> dict:
     songs.save_artifact(args.song_id, "learning-profile.json", profile)
     songs.update_song(args.song_id, {"materialMatchStatus": "READY", "learningProfileStatus": "READY", "processingStatus": "PROFILE_READY"}, internal=True)
     preparations.invalidate_for_song(args.song_id)
-    return {"songId": args.song_id, "materialMatch": match, "learningProfile": profile}
+    return {
+        "songId": args.song_id,
+        "materialMatch": match,
+        "learningProfile": profile,
+        **resource_summary(song),
+    }
 
 
-def parse_activities(raw: str) -> list[str]:
+def parse_activities(raw: str, *, allowed: list[str] | None = None) -> list[str]:
     values = [item.strip() for item in raw.split(",") if item.strip()]
     invalid = [item for item in values if item not in ACTIVITIES]
     if invalid or not values:
         raise CliError("INVALID_ACTIVITIES", f"课堂活动无效：{', '.join(invalid) if invalid else '至少选择一项'}")
-    return list(dict.fromkeys(values))
+    values = list(dict.fromkeys(values))
+    if allowed is not None:
+        unavailable = [item for item in values if item not in allowed]
+        if unavailable:
+            raise CliError("ACTIVITY_REQUIRES_AUDIO", f"当前简谱模式暂不支持：{', '.join(unavailable)}。上传歌曲音频后可升级为完整模式。")
+    return values
 
 
 def command_generate_recipe(args: argparse.Namespace) -> dict:
     songs, preparations = repositories()
+    song = require_song(songs, args.song_id)
     score = require_verified_score(songs, args.song_id)
     profile = songs.get_artifact(args.song_id, "learning-profile.json")
+    activities = parse_activities(args.activities, allowed=available_activities(song))
     preparation = preparations.create_preparation(args.song_id, reuse_active=not args.new)
-    preparation = preparations.update_preparation(preparation["preparationId"], {"selectedActivities": parse_activities(args.activities)})
+    preparation = preparations.update_preparation(preparation["preparationId"], {"selectedActivities": activities})
     library = read_json(RUNTIME / "teaching_assets" / "stage1-teaching-assets.json")
     recipe = node_pipeline("recipe", {"preparation": preparation, "profile": profile, "score": score, "teachingAssetLibrary": library})
     preparations.save_artifact(preparation["preparationId"], "lesson-recipe.json", recipe)
@@ -239,7 +324,12 @@ def command_generate_recipe(args: argparse.Namespace) -> dict:
         "readinessStatus": "NOT_EVALUATED",
         "status": "DRAFT",
     }, internal=True)
-    return {"preparation": preparations.get_preparation_by_id(preparation["preparationId"]), "lessonRecipe": recipe, "humanReviewRequired": True}
+    return {
+        "preparation": preparations.get_preparation_by_id(preparation["preparationId"]),
+        "lessonRecipe": recipe,
+        "humanReviewRequired": True,
+        **resource_summary(song),
+    }
 
 
 def command_confirm_recipe(args: argparse.Namespace) -> dict:
@@ -263,6 +353,9 @@ def command_confirm_recipe(args: argparse.Namespace) -> dict:
 def command_alignment(args: argparse.Namespace) -> dict:
     songs, preparations = repositories()
     preparation = require_preparation(preparations, args.preparation_id)
+    song = require_song(songs, preparation["songId"])
+    if not song.get("assets", {}).get("originalAudio"):
+        raise CliError("ORIGINAL_AUDIO_REQUIRED", "当前为简谱模式，不需要也不能设置原曲小节校准。")
     score = require_verified_score(songs, preparation["songId"])
     if args.start_measure > args.end_measure or args.start_sec >= args.end_sec:
         raise CliError("INVALID_ALIGNMENT", "校准范围必须满足 startMeasure <= endMeasure 且 startSec < endSec。")
@@ -324,32 +417,58 @@ def default_sticker_arrangement(preparation: dict, recipe: dict) -> dict:
 def command_prepare(args: argparse.Namespace) -> dict:
     songs, preparations = repositories()
     preparation = require_preparation(preparations, args.preparation_id)
+    song = require_song(songs, preparation["songId"])
     score = require_verified_score(songs, preparation["songId"])
     recipe = preparations.get_artifact(args.preparation_id, "lesson-recipe.json")
     if not recipe or recipe.get("reviewStatus") != "REVIEWED":
         raise CliError("RECIPE_REVIEW_REQUIRED", "请先由教师确认课堂方案。")
+
+    selected = {item.get("type") for item in recipe.get("activities", [])}
+    unavailable = [item for item in selected if item and item not in available_activities(song)]
+    if unavailable:
+        raise CliError("ACTIVITY_REQUIRES_AUDIO", f"当前资源模式无法准备：{', '.join(sorted(unavailable))}。")
+
     alignment = songs.get_artifact(preparation["songId"], "measure-alignment.json")
-    if not alignment:
-        raise CliError("MEASURE_ALIGNMENT_REQUIRED", "请先人工校准原曲小节时间。")
-    song = require_song(songs, preparation["songId"])
-    listening = generate_listening_body_plan(song, score)
-    gestures = read_json(RUNTIME / "gestures" / "gesture-library.json")
-    trace = node_pipeline("melody-trace-plan", {"score": score, "alignment": alignment, "gestureLibrary": gestures})
-    sticker_selected = any(item.get("type") == "sticker_arrangement" for item in recipe.get("activities", []))
-    arrangement_artifact = songs.get_artifact(preparation["songId"], "sticker-arrangement-plan.json")
-    if sticker_selected and (not arrangement_artifact or arrangement_artifact.get("sourceScoreVerifiedAt") != score.get("verifiedAt")):
-        raise CliError("ARRANGEMENT_INFERENCE_REQUIRED", "请先由 QwenWork 生成 Arrangement Plan，再运行 import-arrangement-plan。")
-    raw_plan = arrangement_artifact.get("plan") if arrangement_artifact else None
-    event_pack = generate_sticker_stem_plan(score, raw_plan=raw_plan)
-    event_pack["totalBeats"] = event_pack["measureCount"] * (float(event_pack["meter"].get("beats", 4)) * 4 / float(event_pack["meter"].get("unit", 4)))
-    event_pack["readinessMode"] = "QWENWORK_LOCAL_CLI_WEB_AUDIO_V2"
-    songs.save_artifact(preparation["songId"], "listening-body-plan.json", listening)
-    songs.save_artifact(preparation["songId"], "melody-trace-plan.json", trace)
-    songs.save_artifact(preparation["songId"], "sticker-stems.json", event_pack)
-    arrangement = default_sticker_arrangement(preparation, recipe)
-    preparations.save_artifact(args.preparation_id, "sticker-arrangement.json", arrangement)
+    needs_alignment = bool(selected & {"melody_trace", "ensemble"})
+    if needs_alignment and not alignment:
+        raise CliError("MEASURE_ALIGNMENT_REQUIRED", "当前活动需要原曲小节对齐，请先在简谱检查面板完成校准。")
+
+    listening = None
+    if "listen" in selected:
+        if not song.get("assets", {}).get("originalAudio"):
+            raise CliError("ORIGINAL_AUDIO_REQUIRED", "听一听，动一动需要歌曲原音频。")
+        listening = generate_listening_body_plan(song, score)
+        songs.save_artifact(preparation["songId"], "listening-body-plan.json", listening)
+
+    trace = None
+    if selected & {"melody_trace", "ensemble"}:
+        gestures = read_json(RUNTIME / "gestures" / "gesture-library.json")
+        trace = node_pipeline("melody-trace-plan", {"score": score, "alignment": alignment, "gestureLibrary": gestures})
+        songs.save_artifact(preparation["songId"], "melody-trace-plan.json", trace)
+
+    event_pack = None
+    arrangement = None
+    if "sticker_arrangement" in selected:
+        arrangement_artifact = songs.get_artifact(preparation["songId"], "sticker-arrangement-plan.json")
+        if not arrangement_artifact or arrangement_artifact.get("sourceScoreVerifiedAt") != score.get("verifiedAt"):
+            raise CliError("ARRANGEMENT_INFERENCE_REQUIRED", "请先由 QwenWork 生成 Arrangement Plan，再运行 import-arrangement-plan。")
+        raw_plan = arrangement_artifact.get("plan")
+        event_pack = generate_sticker_stem_plan(score, raw_plan=raw_plan)
+        event_pack["totalBeats"] = event_pack["measureCount"] * (float(event_pack["meter"].get("beats", 4)) * 4 / float(event_pack["meter"].get("unit", 4)))
+        event_pack["readinessMode"] = "QWENWORK_RESOURCE_MODES_V3"
+        songs.save_artifact(preparation["songId"], "sticker-stems.json", event_pack)
+        arrangement = default_sticker_arrangement(preparation, recipe)
+        preparations.save_artifact(args.preparation_id, "sticker-arrangement.json", arrangement)
+
     preparations.update_preparation(args.preparation_id, {"readinessStatus": "NOT_EVALUATED", "status": "DRAFT"}, internal=True)
-    return {"preparationId": args.preparation_id, "listeningBodyPlan": listening, "melodyTracePlan": trace, "arrangementEventPack": event_pack, "stickerArrangement": arrangement}
+    return {
+        "preparationId": args.preparation_id,
+        "resourceMode": resource_mode(song),
+        "listeningBodyPlan": listening,
+        "melodyTracePlan": trace,
+        "arrangementEventPack": event_pack,
+        "stickerArrangement": arrangement,
+    }
 
 
 def command_readiness(args: argparse.Namespace) -> dict:
@@ -391,8 +510,10 @@ def command_export(args: argparse.Namespace) -> dict:
 
 
 def bool_value(raw: str) -> bool:
-    if str(raw).lower() in {"true", "1", "yes"}: return True
-    if str(raw).lower() in {"false", "0", "no"}: return False
+    if str(raw).lower() in {"true", "1", "yes"}:
+        return True
+    if str(raw).lower() in {"false", "0", "no"}:
+        return False
     raise argparse.ArgumentTypeError("必须是 true 或 false")
 
 
@@ -400,7 +521,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = JsonParser(prog="animal_band_cli.py")
     subs = parser.add_subparsers(dest="command", required=True, parser_class=JsonParser)
     subs.add_parser("doctor").set_defaults(handler=command_doctor)
-    p = subs.add_parser("recognize-score"); p.add_argument("--score-image", required=True); p.add_argument("--audio", required=True); p.add_argument("--title", required=True); p.add_argument("--inference-input", required=True); p.set_defaults(handler=command_recognize)
+    p = subs.add_parser("recognize-score"); p.add_argument("--score-image", required=True); p.add_argument("--audio"); p.add_argument("--title", required=True); p.add_argument("--inference-input", required=True); p.set_defaults(handler=command_recognize)
+    p = subs.add_parser("add-audio"); p.add_argument("--song-id", required=True); p.add_argument("--audio", required=True); p.set_defaults(handler=command_add_audio)
     p = subs.add_parser("update-score"); p.add_argument("--song-id", required=True); p.add_argument("--score-json", required=True); p.set_defaults(handler=command_update_score)
     p = subs.add_parser("verify-score"); p.add_argument("--song-id", required=True); p.add_argument("--confirmed", required=True, type=bool_value); p.add_argument("--reviewer", default="teacher"); p.set_defaults(handler=command_verify_score)
     p = subs.add_parser("score-status"); p.add_argument("--song-id", required=True); p.set_defaults(handler=command_score_status)
