@@ -69,17 +69,19 @@ python3 scripts/setup.py
 python3 scripts/doctor.py --json
 ```
 
-如 Node.js 不在 `PATH`，可设置 `ANIMAL_BAND_NODE` 指向 Node 可执行文件。
+QwenWork / Desktop 可能不会继承终端的 `PATH`。发行版会自动从 `ANIMAL_BAND_NODE`、当前 `PATH`、Homebrew、Volta、NVM、fnm、asdf 及常见 Windows Node.js 安装位置查找 Node，普通用户不需要手动配置环境变量。
 
 ## 技术边界
 
 发行架构是 `Skill/QwenWork Inference + Local CLI + Animal Band Engine + Static Classroom + Web Sampler`。QwenWork 只产出待校验的结构化推理；专业 Engine 是课程判断与备课生成的唯一事实来源。课堂导出后不依赖服务器、Qwen、CLI、FluidSynth 或 MCP。
 
-本地命令入口：
+面向 QwenWork / 普通用户的本地命令入口：
 
 ```bash
-python3 runtime/animal_band_cli.py --help
+python3 scripts/animal_band.py --help
 ```
+
+`runtime/animal_band_cli.py` 是内部 canonical JSON CLI；桌面宿主应通过 `scripts/animal_band.py` 调用，以获得 Node 自动发现能力。
 
 静态课堂位于 `workspace/exports/<preparationId>/`，也会生成对应 ZIP。若客户端不能直接发布，可进入导出目录运行 `python3 -m http.server 4176` 预览。
 
