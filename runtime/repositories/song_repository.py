@@ -13,6 +13,7 @@ PROCESSING_STATUSES = {
 
 MATERIAL_MATCH_STATUSES = {"NOT_GENERATED", "READY", "STALE"}
 LEARNING_PROFILE_STATUSES = {"NOT_GENERATED", "READY", "STALE", "PROFILE_READY"}
+RESOURCE_MODES = {"SCORE_ONLY", "SCORE_AUDIO"}
 
 
 class SongRepository:
@@ -64,6 +65,10 @@ class SongRepository:
         if processing_status == "RECOGNIZING" and not (draft_path or verified_path):
             processing_status = "SCORE_UPLOADED" if score_image else "CREATED"
             recognition_status = "UPLOADED" if score_image else "NOT_STARTED"
+        metadata = deepcopy(raw.get("metadata") or {})
+        # Resource mode is capability-derived. An uploaded original audio always
+        # upgrades the song to SCORE_AUDIO; without it the truthful mode is SCORE_ONLY.
+        metadata["resourceMode"] = "SCORE_AUDIO" if original_audio else "SCORE_ONLY"
         return {
             "songId": song_id,
             "title": str(raw.get("title") or song_id),
@@ -73,7 +78,7 @@ class SongRepository:
                 "originalAudio": self._public_path(song_id, original_audio),
                 "scoreImage": self._public_path(song_id, score_image),
             },
-            "metadata": deepcopy(raw.get("metadata") or {}),
+            "metadata": metadata,
             "processingStatus": processing_status,
             "score": {
                 "recognitionStatus": recognition_status,
@@ -106,7 +111,7 @@ class SongRepository:
             return self._normalize(read_json(song_path))
         return next((song for song in self.list_songs() if song["songId"] == song_id), None)
 
-    def create_song(self, title: str, stage_id: str, metadata: dict, audio: tuple[str, bytes], score_image: tuple[str, bytes]) -> dict:
+    def create_song(self, title: str, stage_id: str, metadata: dict, audio: tuple[str, bytes] | None, score_image: tuple[str, bytes]) -> dict:
         title = str(title or "").strip()
         if not title:
             raise ValueError("title 不能为空。")
@@ -116,21 +121,26 @@ class SongRepository:
         song_dir = self._song_dir(song_id)
         source_dir = song_dir / "source"
         source_dir.mkdir(parents=True, exist_ok=False)
-        audio_name, audio_bytes = audio
         image_name, image_bytes = score_image
-        (source_dir / audio_name).write_bytes(audio_bytes)
         (source_dir / image_name).write_bytes(image_bytes)
+        original_audio = None
+        if audio:
+            audio_name, audio_bytes = audio
+            (source_dir / audio_name).write_bytes(audio_bytes)
+            original_audio = f"data/songs/{song_id}/source/{audio_name}"
         timestamp = utc_now()
+        normalized_metadata = deepcopy(metadata or {})
+        normalized_metadata["resourceMode"] = "SCORE_AUDIO" if original_audio else "SCORE_ONLY"
         song = {
             "songId": song_id,
             "title": title,
             "stageId": stage_id,
             "source": "teacher_added",
             "assets": {
-                "originalAudio": f"data/songs/{song_id}/source/{audio_name}",
+                "originalAudio": original_audio,
                 "scoreImage": f"data/songs/{song_id}/source/{image_name}",
             },
-            "metadata": deepcopy(metadata or {}),
+            "metadata": normalized_metadata,
             "processingStatus": "SCORE_UPLOADED",
             "score": {
                 "recognitionStatus": "UPLOADED",
@@ -144,7 +154,7 @@ class SongRepository:
             "updatedAt": timestamp,
         }
         atomic_write_json(self._song_path(song_id), song)
-        return song
+        return self._normalize(song)
 
     def save_original_audio(self, song_id: str, audio: tuple[str, bytes]) -> dict:
         song = self.get_song_by_id(song_id)
@@ -155,6 +165,7 @@ class SongRepository:
         source_dir.mkdir(parents=True, exist_ok=True)
         (source_dir / audio_name).write_bytes(audio_bytes)
         song["assets"]["originalAudio"] = f"data/songs/{song_id}/source/{audio_name}"
+        song.setdefault("metadata", {})["resourceMode"] = "SCORE_AUDIO"
         song["updatedAt"] = utc_now()
         atomic_write_json(self._song_path(song_id), song)
         return self._normalize(song)
@@ -182,10 +193,12 @@ class SongRepository:
             raise ValueError("materialMatchStatus 无效。")
         if "learningProfileStatus" in changes and changes["learningProfileStatus"] not in LEARNING_PROFILE_STATUSES:
             raise ValueError("learningProfileStatus 无效。")
+        if "metadata" in changes and not isinstance(changes["metadata"], dict):
+            raise ValueError("metadata 必须为对象。")
         song.update(deepcopy(changes))
         song["updatedAt"] = utc_now()
         atomic_write_json(self._song_path(song_id), song)
-        return song
+        return self._normalize(song)
 
     def get_score(self, song_id: str) -> dict | None:
         song = self.get_song_by_id(song_id)

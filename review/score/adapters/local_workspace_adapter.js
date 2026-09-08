@@ -21,7 +21,10 @@ export async function saveDraft(songId, score) { return request(`/bridge/score/d
 export async function markReviewed(songId, score) { return request(`/bridge/score/reviewed?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(score) }); }
 export async function verifyScore(songId, score) { return request(`/bridge/score/verified?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(score) }); }
 export async function loadSourceImage(songId) { return asset(`/bridge/source-image?songId=${encodeURIComponent(songId)}`); }
-export async function loadOriginalAudio(songId) { return asset(`/bridge/original-audio?songId=${encodeURIComponent(songId)}`); }
+export async function loadOriginalAudio(songId) {
+  const resources = await request(`/bridge/resources?songId=${encodeURIComponent(songId)}`);
+  return resources.originalAudio ? asset(`/bridge/original-audio?songId=${encodeURIComponent(songId)}`) : "";
+}
 export async function loadMeasureAlignment(songId) { return (await request(`/bridge/measure-alignment?songId=${encodeURIComponent(songId)}`)).alignment; }
 export async function saveMeasureAlignment(songId, alignment) { return (await request(`/bridge/measure-alignment?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(alignment) })).alignment; }
 export async function closeReviewSession() { return request("/bridge/close", { method: "POST", body: "{}" }); }
