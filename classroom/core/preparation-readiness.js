@@ -10,11 +10,7 @@ function check(id, ok, successMessage, failureMessage = successMessage) {
 
 function measureAlignmentReady(score, alignment) {
   if (!score || !alignment || alignment.songId !== score.songId || alignment.sourceScoreVerifiedAt !== score.verifiedAt) return false;
-  const coverage = alignmentCoverage(score, alignment);
-  const firstMeasure = Number(score.measures?.[0]?.number ?? 1);
-  const calibrationStartsFirst = Number(alignment?.calibration?.startMeasure) === firstMeasure;
-  const firstAnchorReady = alignment.anchors?.some((item) => Number(item.measure) === firstMeasure);
-  return coverage.ready && Boolean(calibrationStartsFirst || firstAnchorReady);
+  return alignmentCoverage(score, alignment).ready;
 }
 
 export function evaluatePreparationReadiness(input) {
@@ -83,7 +79,7 @@ export function evaluatePreparationReadiness(input) {
       "MEASURE_ALIGNMENT_READY",
       measureAlignmentReady(verifiedScore, measureAlignment),
       "原曲小节已对齐",
-      "请返回简谱确认页，人工校准第一个教学小节段的真实音频范围"
+      "请返回简谱确认页，从你设置的第1小节起点开始校准真实音频范围"
     ));
   }
 

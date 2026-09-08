@@ -35,7 +35,7 @@ Use only `python3 scripts/animal_band.py <command> ...` for state changes.
    - score + audio: add `--audio <audio>`.
    Never call a model API from the repository.
 2. Read the command result's `resourceMode`, `availableActivities`, and `lockedActivities`. Say: “简谱识别完成。我已经把识别结果整理成可校对的简谱。请完成一次人工检查后再生成课堂。”
-3. Run `open-score-review --song-id <id>` and provide or open the returned “检查乐谱” URL. The teacher checks every measure and selects singing segmentation. In `SCORE_AUDIO`, the same panel also requires original-audio Measure Alignment. In `SCORE_ONLY`, audio calibration is skipped automatically. Use the same URL in an embedded web tray when supported; otherwise open it in the local browser.
+3. Run `open-score-review --song-id <id>` and provide or open the returned “检查乐谱” URL. The teacher checks every measure and selects singing segmentation. The panel now also includes “设置小节起点”：如果谱面前面有前奏、弱起、无歌词前导音或教材截取段，教师可以把任意已识别谱面小节设为教学上的“第1小节”；此前的小节保留在 Verified Score 中，但作为 lead-in，不进入课堂教学分段和后续原曲小节对齐。In `SCORE_AUDIO`, the same panel also requires original-audio Measure Alignment, and that alignment must start from the teacher-defined first teaching measure. In `SCORE_ONLY`, audio calibration is skipped automatically. Use the same URL in an embedded web tray when supported; otherwise open it in the local browser.
 4. After the teacher returns, run `score-status`.
    - Always require `verificationStatus = verified`.
    - Require `measureAlignmentReady = true` only when `measureAlignmentRequired = true`.
