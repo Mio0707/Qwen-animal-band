@@ -1,0 +1,1 @@
+"""Static classroom release package."""

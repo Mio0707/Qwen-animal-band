@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def main() -> int:
+    for name in ("songs", "preparations", "exports"):
+        target = ROOT / "workspace" / name
+        target.mkdir(parents=True, exist_ok=True)
+        (target / ".gitkeep").touch(exist_ok=True)
+    doctor = subprocess.run([sys.executable, str(ROOT / "scripts" / "doctor.py"), "--json"], text=True, capture_output=True, cwd=ROOT)
+    status = json.loads(doctor.stdout)
+    if not status["ready"]:
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        print("Animal Band 初始化失败，请修复上面的结构或运行时问题。", file=sys.stderr)
+        return 1
+    smoke = subprocess.run([sys.executable, str(ROOT / "scripts" / "smoke_test.py")], cwd=ROOT)
+    if smoke.returncode != 0:
+        return smoke.returncode
+    if not status["qwen"]["configured"]:
+        print("提示：在线识谱前请设置 DASHSCOPE_API_KEY；不要把 Key 提交到 Git。", file=sys.stderr)
+    print("ANIMAL_BAND_READY")
+    return 0
+
+
+if __name__ == "__main__": raise SystemExit(main())

@@ -1,0 +1,262 @@
+{
+  "schemaVersion": "1.0.0",
+  "libraryId": "animal-band-web-sampler-v1",
+  "sampleRate": 44100,
+  "format": "mp3",
+  "source": {
+    "renderer": "FluidSynth",
+    "soundfontName": "MuseScore_General.sf3",
+    "soundfontPathAtBuildTime": "NOT_DISTRIBUTED",
+    "soundfontSha256": "5b85b6c2c61d10b2b91cddd41efcce7b25cd31c8271d511c73afafbef20b6fa3",
+    "generatedAt": "2026-09-08T06:31:50.392086Z"
+  },
+  "instruments": {
+    "dog": {
+      "trackId": "dog",
+      "label": "小狗",
+      "instrument": "drums",
+      "mode": "one_shot",
+      "channel": 9,
+      "defaultGain": 0.9,
+      "samples": [
+        {
+          "id": "kick",
+          "midi": 36,
+          "path": "drums/kick_36.mp3",
+          "durationSec": 0.439184
+        },
+        {
+          "id": "snare",
+          "midi": 38,
+          "path": "drums/snare_38.mp3",
+          "durationSec": 0.573878
+        },
+        {
+          "id": "clap",
+          "midi": 39,
+          "path": "drums/clap_39.mp3",
+          "durationSec": 0.494059
+        },
+        {
+          "id": "closed_hat",
+          "midi": 42,
+          "path": "drums/closed_hat_42.mp3",
+          "durationSec": 0.3
+        },
+        {
+          "id": "open_hat",
+          "midi": 46,
+          "path": "drums/open_hat_46.mp3",
+          "durationSec": 1.611519
+        }
+      ]
+    },
+    "bear": {
+      "trackId": "bear",
+      "label": "小熊",
+      "instrument": "keyboard",
+      "mode": "pitched_sampler",
+      "program": 0,
+      "playableRange": [
+        48,
+        79
+      ],
+      "maxPitchShiftSemitones": 2,
+      "defaultGain": 0.72,
+      "attackSec": 0.005,
+      "releaseSec": 0.08,
+      "samples": [
+        {
+          "id": "note_048",
+          "midi": 48,
+          "path": "keyboard/note_048.mp3",
+          "durationSec": 4.140771
+        },
+        {
+          "id": "note_052",
+          "midi": 52,
+          "path": "keyboard/note_052.mp3",
+          "durationSec": 4.080907
+        },
+        {
+          "id": "note_055",
+          "midi": 55,
+          "path": "keyboard/note_055.mp3",
+          "durationSec": 4.110839
+        },
+        {
+          "id": "note_060",
+          "midi": 60,
+          "path": "keyboard/note_060.mp3",
+          "durationSec": 4.085896
+        },
+        {
+          "id": "note_064",
+          "midi": 64,
+          "path": "keyboard/note_064.mp3",
+          "durationSec": 4.095873
+        },
+        {
+          "id": "note_067",
+          "midi": 67,
+          "path": "keyboard/note_067.mp3",
+          "durationSec": 3.058231
+        },
+        {
+          "id": "note_072",
+          "midi": 72,
+          "path": "keyboard/note_072.mp3",
+          "durationSec": 1.401995
+        },
+        {
+          "id": "note_076",
+          "midi": 76,
+          "path": "keyboard/note_076.mp3",
+          "durationSec": 2.399728
+        },
+        {
+          "id": "note_079",
+          "midi": 79,
+          "path": "keyboard/note_079.mp3",
+          "durationSec": 1.017868
+        }
+      ]
+    },
+    "cat": {
+      "trackId": "cat",
+      "label": "小猫",
+      "instrument": "bass",
+      "mode": "pitched_sampler",
+      "program": 33,
+      "playableRange": [
+        28,
+        52
+      ],
+      "maxPitchShiftSemitones": 2,
+      "defaultGain": 0.78,
+      "attackSec": 0.005,
+      "releaseSec": 0.06,
+      "samples": [
+        {
+          "id": "note_028",
+          "midi": 28,
+          "path": "bass/note_028.mp3",
+          "durationSec": 4.115828
+        },
+        {
+          "id": "note_031",
+          "midi": 31,
+          "path": "bass/note_031.mp3",
+          "durationSec": 4.125805
+        },
+        {
+          "id": "note_035",
+          "midi": 35,
+          "path": "bass/note_035.mp3",
+          "durationSec": 4.135782
+        },
+        {
+          "id": "note_040",
+          "midi": 40,
+          "path": "bass/note_040.mp3",
+          "durationSec": 4.140771
+        },
+        {
+          "id": "note_043",
+          "midi": 43,
+          "path": "bass/note_043.mp3",
+          "durationSec": 4.120816
+        },
+        {
+          "id": "note_047",
+          "midi": 47,
+          "path": "bass/note_047.mp3",
+          "durationSec": 4.115828
+        },
+        {
+          "id": "note_052",
+          "midi": 52,
+          "path": "bass/note_052.mp3",
+          "durationSec": 4.14576
+        }
+      ]
+    },
+    "lion": {
+      "trackId": "lion",
+      "label": "小狮子",
+      "instrument": "alto_sax",
+      "mode": "pitched_sampler",
+      "program": 65,
+      "playableRange": [
+        48,
+        84
+      ],
+      "maxPitchShiftSemitones": 2,
+      "defaultGain": 0.74,
+      "attackSec": 0.01,
+      "releaseSec": 0.08,
+      "samples": [
+        {
+          "id": "note_048",
+          "midi": 48,
+          "path": "sax/note_048.mp3",
+          "durationSec": 4.494966
+        },
+        {
+          "id": "note_052",
+          "midi": 52,
+          "path": "sax/note_052.mp3",
+          "durationSec": 4.589751
+        },
+        {
+          "id": "note_055",
+          "midi": 55,
+          "path": "sax/note_055.mp3",
+          "durationSec": 4.504943
+        },
+        {
+          "id": "note_060",
+          "midi": 60,
+          "path": "sax/note_060.mp3",
+          "durationSec": 4.549841
+        },
+        {
+          "id": "note_064",
+          "midi": 64,
+          "path": "sax/note_064.mp3",
+          "durationSec": 4.579773
+        },
+        {
+          "id": "note_067",
+          "midi": 67,
+          "path": "sax/note_067.mp3",
+          "durationSec": 4.48
+        },
+        {
+          "id": "note_072",
+          "midi": 72,
+          "path": "sax/note_072.mp3",
+          "durationSec": 4.509932
+        },
+        {
+          "id": "note_076",
+          "midi": 76,
+          "path": "sax/note_076.mp3",
+          "durationSec": 4.55483
+        },
+        {
+          "id": "note_079",
+          "midi": 79,
+          "path": "sax/note_079.mp3",
+          "durationSec": 4.440091
+        },
+        {
+          "id": "note_084",
+          "midi": 84,
+          "path": "sax/note_084.mp3",
+          "durationSec": 4.589751
+        }
+      ]
+    }
+  }
+}
