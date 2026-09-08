@@ -15,6 +15,11 @@ function lyricHint(measure) {
   return text ? ` · ${text.slice(0, 8)}` : " · 无歌词/前导音";
 }
 
+function hasUnsavedScoreEdits() {
+  const message = document.querySelector(".action-message")?.textContent ?? "";
+  return message.includes("尚未写回") || message.includes("请保存") || message.includes("已修改");
+}
+
 async function mount() {
   const container = document.querySelector("#score-origin-control");
   if (!container) return;
@@ -50,7 +55,7 @@ async function mount() {
       <div class="score-live-preview-head">
         <div>
           <strong>设置小节起点</strong>
-          <small>如果简谱前面有前奏、弱起或无歌词的前导音，可以指定“真正的第1小节”从哪里开始。前面的内容仍保留在乐谱里，但不进入课堂教学分段和原曲小节对齐。</small>
+          <small>建议先完成这一步，再逐小节校对。如果简谱前面有前奏、弱起或无歌词的前导音，可以指定“真正的第1小节”从哪里开始。前面的内容仍保留在乐谱里，但不进入课堂教学分段和原曲小节对齐。</small>
         </div>
       </div>
       <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;padding:14px 0 4px">
@@ -78,10 +83,15 @@ async function mount() {
     button.addEventListener("click", async () => {
       const selected = Number(select.value);
       if (!measures.some((measure) => Number(measure.number) === selected)) return;
+      if (hasUnsavedScoreEdits()) {
+        statusNode.textContent = "你还有尚未保存的校谱修改。请先点击底部“保存当前乐谱”，再设置小节起点，避免覆盖刚才的修改。";
+        return;
+      }
       button.disabled = true;
       button.textContent = "正在保存…";
       try {
-        const next = structuredClone(score);
+        const latest = await loadScore(songId);
+        const next = structuredClone(latest);
         next.measureOrigin = {
           sourceMeasure: selected,
           logicalMeasure: 1,
