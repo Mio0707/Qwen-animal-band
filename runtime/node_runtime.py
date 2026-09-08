@@ -13,7 +13,7 @@ def _candidate_paths() -> list[Path]:
     if configured:
         candidates.append(Path(configured).expanduser())
 
-    path_node = shutil.which("node")
+    path_node = shutil.which("node") or shutil.which("node.exe")
     if path_node:
         candidates.append(Path(path_node))
 
@@ -24,6 +24,16 @@ def _candidate_paths() -> list[Path]:
         home / ".volta" / "bin" / "node",
         home / ".asdf" / "shims" / "node",
     ])
+
+    program_files = os.environ.get("ProgramFiles")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    app_data = os.environ.get("APPDATA")
+    if program_files:
+        candidates.append(Path(program_files) / "nodejs" / "node.exe")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "Programs" / "nodejs" / "node.exe")
+    if app_data:
+        candidates.append(Path(app_data) / "nvm" / "current" / "node.exe")
 
     candidates.extend(sorted((home / ".nvm" / "versions" / "node").glob("*/bin/node"), reverse=True))
     candidates.extend(sorted((home / ".local" / "share" / "fnm" / "node-versions").glob("*/installation/bin/node"), reverse=True))
@@ -40,7 +50,7 @@ def _candidate_paths() -> list[Path]:
 
 
 def resolve_node() -> str | None:
-    """Resolve Node.js even when a GUI host did not inherit the shell PATH."""
+    """Resolve Node.js even when a desktop host did not inherit the shell PATH."""
     for candidate in _candidate_paths():
         try:
             path = candidate.expanduser().resolve()
