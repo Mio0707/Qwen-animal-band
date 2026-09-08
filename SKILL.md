@@ -11,6 +11,8 @@ Keep curriculum decisions, score state, recipes, readiness, and exports inside t
 
 Run `python3 scripts/doctor.py --json` from this repository. If `ready` is false, run `python3 scripts/setup.py`. The repository runtime must never request, read, or store a model API key; use QwenWork's native reasoning for inference.
 
+The desktop-safe command entry is `python3 scripts/animal_band.py <command> ...`. Use this launcher for all runtime state changes. It automatically resolves Node.js from `ANIMAL_BAND_NODE`, the inherited `PATH`, and common macOS / Windows desktop install locations so QwenWork does not depend on an interactive shell PATH.
+
 When ready, ask the teacher one resource question before requesting files:
 
 “你现在有哪些歌曲资源？
@@ -26,7 +28,7 @@ Do not require audio when the teacher only has a score.
 
 ## Prepare a lesson
 
-Use only `python3 runtime/animal_band_cli.py <command> ...` for state changes.
+Use only `python3 scripts/animal_band.py <command> ...` for state changes.
 
 1. Require the numbered-score image. Require original song audio only for `SCORE_AUDIO`. Read [references/INFERENCE_CONTRACT.md](references/INFERENCE_CONTRACT.md), inspect the uploaded score image with QwenWork's native multimodal reasoning, save only the required score JSON to a temporary untracked file, then run:
    - score only: `recognize-score --score-image <image> --title <title> --inference-input <file>`
