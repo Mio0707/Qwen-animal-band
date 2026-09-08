@@ -41,10 +41,27 @@ def score_issues(score: dict) -> list[str]:
     return list(dict.fromkeys(issues))
 
 
+def measure_origin(score: dict | None) -> int | None:
+    measures = sorted(
+        (item for item in (score or {}).get("measures") or [] if isinstance(item.get("number"), (int, float))),
+        key=lambda item: int(item["number"]),
+    )
+    if not measures:
+        return None
+    valid = {int(item["number"]) for item in measures}
+    try:
+        requested = int(((score or {}).get("measureOrigin") or {}).get("sourceMeasure"))
+    except (TypeError, ValueError):
+        requested = None
+    return requested if requested in valid else int(measures[0]["number"])
+
+
 def alignment_ready(score: dict, alignment: dict | None) -> bool:
     calibration = (alignment or {}).get("calibration") or {}
-    return bool(alignment and alignment.get("sourceScoreVerifiedAt") in {None, score.get("verifiedAt")}
-                and int(calibration.get("startMeasure", 0)) >= 1
+    origin = measure_origin(score)
+    return bool(alignment and origin is not None
+                and alignment.get("sourceScoreVerifiedAt") in {None, score.get("verifiedAt")}
+                and int(calibration.get("startMeasure", 0)) == origin
                 and int(calibration.get("endMeasure", 0)) >= int(calibration.get("startMeasure", 0))
                 and float(calibration.get("startSec", -1)) >= 0
                 and float(calibration.get("endSec", 0)) > float(calibration.get("startSec", 0)))
@@ -195,6 +212,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             song_id, value = self._song_id(query), self._body()
             if path.startswith("/bridge/score/"):
+                previous_score = self.server.songs.get_score(song_id)
+                previous_origin = measure_origin(previous_score)
                 score = deepcopy(value)
                 score["songId"] = song_id
                 if path.endswith("/draft"):
@@ -218,9 +237,12 @@ class Handler(BaseHTTPRequestHandler):
                     score.setdefault("source", {}).update({"humanReviewed": True, "reviewedAt": now})
                 else:
                     raise FileNotFoundError("Endpoint 不存在。")
+                next_origin = measure_origin(score)
                 self.server.songs.save_score(song_id, score)
+                if previous_origin != next_origin:
+                    self.server.songs.delete_artifact(song_id, "measure-alignment.json")
                 self.server.preparations.invalidate_for_song(song_id)
-                self._json(200, {"score": score})
+                self._json(200, {"score": score, "measureOriginChanged": previous_origin != next_origin})
                 return
             if path == "/bridge/measure-alignment":
                 song = self.server.songs.get_song_by_id(song_id)
@@ -232,7 +254,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("请先标记校准开始和结束。")
                 alignment = {**value, "schemaVersion": "2.0.0", "songId": song_id, "sourceScoreVerifiedAt": score.get("verifiedAt"), "updatedAt": utc_now(), "calibrationStatus": "teacher_verified"}
                 if not alignment_ready(score, alignment):
-                    raise ValueError("Measure Alignment 无效。")
+                    origin = measure_origin(score)
+                    raise ValueError(f"Measure Alignment 无效。请从教学第1小节（谱面第 {origin} 小节）开始校准。")
                 self.server.songs.save_artifact(song_id, "measure-alignment.json", alignment)
                 self.server.preparations.invalidate_readiness_for_song(song_id)
                 self._json(200, {"alignment": alignment})
