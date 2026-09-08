@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,7 +14,14 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = ROOT / "runtime" / "animal_band_cli.py"
+RUNTIME = ROOT / "runtime"
+if str(RUNTIME) not in sys.path:
+    sys.path.insert(0, str(RUNTIME))
+
+from node_runtime import resolve_node  # noqa: E402
+
+CLI = ROOT / "scripts" / "animal_band.py"
+CANONICAL_CLI = RUNTIME / "animal_band_cli.py"
 RESULTS: list[tuple[str, bool, str]] = []
 
 
@@ -64,15 +70,15 @@ def main() -> int:
     generated_preparation = None
     try:
         layout = [
-            ROOT / "SKILL.md", ROOT / "README.md", CLI, ROOT / "runtime" / "engine",
+            ROOT / "SKILL.md", ROOT / "README.md", CLI, CANONICAL_CLI, ROOT / "runtime" / "engine",
             ROOT / "classroom" / "app", ROOT / "classroom" / "web_audio",
             ROOT / "assets" / "web-sampler-v1" / "sample-library.json", ROOT / "review" / "score" / "index.html",
-            ROOT / "runtime" / "review_bridge.py",
+            ROOT / "runtime" / "review_bridge.py", ROOT / "runtime" / "node_runtime.py",
         ]
         check("repo layout", all(path.exists() for path in layout), "发行文件缺失")
-        check("Python imports", CLI.is_file() and (ROOT / "runtime" / "repositories" / "song_repository.py").is_file())
-        node = os.environ.get("ANIMAL_BAND_NODE") or shutil.which("node")
-        check("Node available", bool(node), "请安装 Node.js 或设置 ANIMAL_BAND_NODE")
+        check("Python imports", CLI.is_file() and CANONICAL_CLI.is_file() and (ROOT / "runtime" / "repositories" / "song_repository.py").is_file())
+        node = resolve_node()
+        check("Node available", bool(node), "请安装 Node.js；桌面宿主会自动搜索常见安装位置")
         check("QwenWork inference importer", (ROOT / "runtime" / "score_recognition" / "skill_score_importer.py").is_file())
         runtime_sources = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "runtime").rglob("*.py"))
         forbidden_credentials = ("DASH" + "SCOPE_API_KEY", "Author" + "ization\": f\"Bearer")

@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = ROOT / "runtime" / "animal_band_cli.py"
+CLI = ROOT / "scripts" / "animal_band.py"
 WORKSPACE = ROOT / "workspace"
 RESULTS: list[tuple[str, bool, str]] = []
 
