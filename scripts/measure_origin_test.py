@@ -27,6 +27,9 @@ def main() -> int:
     if len(measures) < 4:
         print("FAIL: fixture needs at least 4 measures", file=sys.stderr)
         return 1
+
+    first_source = int(measures[0]["number"])
+    second_source = int(measures[1]["number"])
     origin = int(measures[2]["number"])
     next_measure = int(measures[3]["number"])
     score["measureOrigin"] = {"sourceMeasure": origin, "logicalMeasure": 1, "source": "test"}
@@ -38,20 +41,21 @@ def main() -> int:
         payload.write_text(json.dumps(score, ensure_ascii=False), encoding="utf-8")
         script = temp / "check.mjs"
         script.write_text(
-            f'''import fs from "node:fs";\n'
-import {{ buildLessonSegments }} from {json.dumps((ROOT / "runtime" / "engine" / "lesson-segments.js").as_uri())};\n'
-import {{ alignmentCoverage }} from {json.dumps((ROOT / "runtime" / "engine" / "measure-alignment.js").as_uri())};\n'
-const score = JSON.parse(fs.readFileSync({json.dumps(str(payload))}, "utf8"));\n'
-const segments = buildLessonSegments(score, 2);\n'
-if (!segments.length) throw new Error("no lesson segments");\n'
-if (segments[0].startMeasure !== {origin}) throw new Error(`origin start mismatch: ${{segments[0].startMeasure}}`);\n'
-if (segments[0].logicalStartMeasure !== 1 || segments[0].logicalEndMeasure !== 2) throw new Error("logical numbering mismatch");\n'
-if (segments[0].leadInMeasureCount !== 2) throw new Error(`lead-in count mismatch: ${{segments[0].leadInMeasureCount}}`);\n'
-const stale = alignmentCoverage(score, {{ songId: score.songId, calibration: {{ startMeasure: {int(measures[0]['number'])}, endMeasure: {int(measures[1]['number'])}, startSec: 1, endSec: 3 }}, anchors: [], segments: [] }});\n'
-if (stale.ready) throw new Error("alignment before origin must be stale");\n'
-const current = alignmentCoverage(score, {{ songId: score.songId, calibration: {{ startMeasure: {origin}, endMeasure: {next_measure}, startSec: 5, endSec: 7 }}, anchors: [], segments: [] }});\n'
-if (!current.ready || !current.originReady || current.originMeasure !== {origin}) throw new Error("origin alignment should be ready");\n'
-console.log(JSON.stringify({{ status: "PASS", origin: {origin}, firstSegment: segments[0], coverage: current }}));\n'''.replace("'\n", "\n"),
+            f"""import fs from \"node:fs\";
+import {{ buildLessonSegments }} from {json.dumps((ROOT / 'runtime' / 'engine' / 'lesson-segments.js').as_uri())};
+import {{ alignmentCoverage }} from {json.dumps((ROOT / 'runtime' / 'engine' / 'measure-alignment.js').as_uri())};
+const score = JSON.parse(fs.readFileSync({json.dumps(str(payload))}, \"utf8\"));
+const segments = buildLessonSegments(score, 2);
+if (!segments.length) throw new Error(\"no lesson segments\");
+if (segments[0].startMeasure !== {origin}) throw new Error(`origin start mismatch: ${{segments[0].startMeasure}}`);
+if (segments[0].logicalStartMeasure !== 1 || segments[0].logicalEndMeasure !== 2) throw new Error(\"logical numbering mismatch\");
+if (segments[0].leadInMeasureCount !== 2) throw new Error(`lead-in count mismatch: ${{segments[0].leadInMeasureCount}}`);
+const stale = alignmentCoverage(score, {{ songId: score.songId, calibration: {{ startMeasure: {first_source}, endMeasure: {second_source}, startSec: 1, endSec: 3 }}, anchors: [], segments: [] }});
+if (stale.ready) throw new Error(\"alignment before origin must be stale\");
+const current = alignmentCoverage(score, {{ songId: score.songId, calibration: {{ startMeasure: {origin}, endMeasure: {next_measure}, startSec: 5, endSec: 7 }}, anchors: [], segments: [] }});
+if (!current.ready || !current.originReady || current.originMeasure !== {origin}) throw new Error(\"origin alignment should be ready\");
+console.log(JSON.stringify({{ status: \"PASS\", origin: {origin}, firstSegment: segments[0], coverage: current }}));
+""",
             encoding="utf-8",
         )
         result = subprocess.run([node, str(script)], cwd=ROOT, text=True, capture_output=True)
