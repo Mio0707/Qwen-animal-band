@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
-from datetime import datetime, timezone
 import json
 import mimetypes
 import os
@@ -20,7 +19,7 @@ for candidate in (ROOT, RUNTIME, RUNTIME / "score_recognition"):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
-from repositories.persistence_utils import atomic_write_json, read_json, utc_now  # noqa: E402
+from repositories.persistence_utils import utc_now  # noqa: E402
 from repositories.preparation_repository import PreparationRepository  # noqa: E402
 from repositories.song_repository import SongRepository  # noqa: E402
 
@@ -83,17 +82,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, status: int, data=None, error: str | None = None, code: str = "BRIDGE_ERROR") -> None:
         payload = {"ok": error is None}
-        if error is None: payload["data"] = data
-        else: payload["error"] = {"code": code, "message": error}
+        if error is None:
+            payload["data"] = data
+        else:
+            payload["error"] = {"code": code, "message": error}
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length < 0 or length > MAX_BODY:
             raise ValueError("请求内容过大。")
         value = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-        if not isinstance(value, dict): raise ValueError("请求内容必须是 JSON 对象。")
+        if not isinstance(value, dict):
+            raise ValueError("请求内容必须是 JSON 对象。")
         return value
 
     def _song_id(self, query: dict) -> str:
@@ -107,97 +114,166 @@ class Handler(BaseHTTPRequestHandler):
     def _media(self, song_id: str, kind: str) -> None:
         song = self.server.songs.get_song_by_id(song_id)
         public = song.get("assets", {}).get(kind)
-        if not public: raise FileNotFoundError("资源不存在。")
+        if not public:
+            raise FileNotFoundError("资源不存在。")
         relative = str(public).removeprefix("data/")
         song_root = (ROOT / "workspace" / "songs" / song_id).resolve()
         path = (ROOT / "workspace" / relative).resolve()
-        if song_root not in path.parents or not path.is_file(): raise PermissionError("资源路径无效。")
+        if song_root not in path.parents or not path.is_file():
+            raise PermissionError("资源路径无效。")
         body = path.read_bytes()
-        self.send_response(200); self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream"); self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _static(self, path: str) -> bool:
         roots = {"/review/score/": ROOT / "review" / "score", "/classroom/core/": ROOT / "classroom" / "core"}
         for prefix, root in roots.items():
-            if not path.startswith(prefix): continue
+            if not path.startswith(prefix):
+                continue
             relative = path[len(prefix):] or "index.html"
             target = (root / relative).resolve()
             if root.resolve() not in target.parents or not target.is_file():
-                self.send_error(404); return True
-            body = target.read_bytes(); self.send_response(200); self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream"); self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body); return True
+                self.send_error(404)
+                return True
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return True
         return False
 
     def do_GET(self) -> None:
         path, query = self._url()
-        if self._static(path): return
+        if self._static(path):
+            return
         if not path.startswith("/bridge/") or not self._authorized(query):
-            self._json(403, error="Review session token 无效。", code="TOKEN_REQUIRED"); return
+            self._json(403, error="Review session token 无效。", code="TOKEN_REQUIRED")
+            return
         self.server.last_activity = time.monotonic()
         try:
             song_id = self._song_id(query) if path != "/bridge/status" else self.server.song_id
-            if path == "/bridge/status": self._json(200, {"running": True, "songId": song_id, "loopbackOnly": True})
-            elif path == "/bridge/score": self._json(200, {"score": self.server.songs.get_score(song_id)})
-            elif path == "/bridge/measure-alignment": self._json(200, {"alignment": self.server.songs.get_artifact(song_id, "measure-alignment.json")})
-            elif path == "/bridge/source-image": self._media(song_id, "scoreImage")
-            elif path == "/bridge/original-audio": self._media(song_id, "originalAudio")
-            else: self._json(404, error="Endpoint 不存在。", code="NOT_FOUND")
-        except FileNotFoundError as error: self._json(404, error=str(error), code="NOT_FOUND")
-        except PermissionError as error: self._json(403, error=str(error), code="FORBIDDEN")
-        except Exception as error: self._json(400, error=str(error))
+            if path == "/bridge/status":
+                self._json(200, {"running": True, "songId": song_id, "loopbackOnly": True})
+            elif path == "/bridge/resources":
+                song = self.server.songs.get_song_by_id(song_id)
+                assets = song.get("assets", {})
+                self._json(200, {
+                    "resourceMode": (song.get("metadata") or {}).get("resourceMode") or ("SCORE_AUDIO" if assets.get("originalAudio") else "SCORE_ONLY"),
+                    "scoreImage": bool(assets.get("scoreImage")),
+                    "originalAudio": bool(assets.get("originalAudio")),
+                })
+            elif path == "/bridge/score":
+                self._json(200, {"score": self.server.songs.get_score(song_id)})
+            elif path == "/bridge/measure-alignment":
+                self._json(200, {"alignment": self.server.songs.get_artifact(song_id, "measure-alignment.json")})
+            elif path == "/bridge/source-image":
+                self._media(song_id, "scoreImage")
+            elif path == "/bridge/original-audio":
+                self._media(song_id, "originalAudio")
+            else:
+                self._json(404, error="Endpoint 不存在。", code="NOT_FOUND")
+        except FileNotFoundError as error:
+            self._json(404, error=str(error), code="NOT_FOUND")
+        except PermissionError as error:
+            self._json(403, error=str(error), code="FORBIDDEN")
+        except Exception as error:
+            self._json(400, error=str(error))
 
     def do_PUT(self) -> None:
         path, query = self._url()
         if not path.startswith("/bridge/") or not self._authorized(query):
-            self._json(403, error="Review session token 无效。", code="TOKEN_REQUIRED"); return
+            self._json(403, error="Review session token 无效。", code="TOKEN_REQUIRED")
+            return
         self.server.last_activity = time.monotonic()
         try:
             song_id, value = self._song_id(query), self._body()
             if path.startswith("/bridge/score/"):
-                score = deepcopy(value); score["songId"] = song_id
+                score = deepcopy(value)
+                score["songId"] = song_id
                 if path.endswith("/draft"):
-                    score.update({"verificationStatus": "draft", "verifiedBy": None, "verifiedAt": None}); score.setdefault("source", {}).update({"humanReviewed": False, "reviewedAt": None})
+                    score.update({"verificationStatus": "draft", "verifiedBy": None, "verifiedAt": None})
+                    score.setdefault("source", {}).update({"humanReviewed": False, "reviewedAt": None})
                 elif path.endswith("/reviewed"):
                     issues = score_issues(score)
-                    if issues: raise ValueError(" ".join(issues))
-                    score.update({"verificationStatus": "reviewed", "verifiedBy": None, "verifiedAt": None}); score.setdefault("source", {}).update({"humanReviewed": True, "reviewedAt": utc_now()})
+                    if issues:
+                        raise ValueError(" ".join(issues))
+                    score.update({"verificationStatus": "reviewed", "verifiedBy": None, "verifiedAt": None})
+                    score.setdefault("source", {}).update({"humanReviewed": True, "reviewedAt": utc_now()})
                 elif path.endswith("/verified"):
                     current = self.server.songs.get_score(song_id)
-                    if current.get("verificationStatus") != "reviewed": raise ValueError("乐谱必须先标记为已审核。")
+                    if current.get("verificationStatus") != "reviewed":
+                        raise ValueError("乐谱必须先标记为已审核。")
                     issues = score_issues(score)
-                    if issues: raise ValueError(" ".join(issues))
-                    now = utc_now(); score.update({"verificationStatus": "verified", "verifiedBy": str(score.get("verifiedBy") or "teacher-review"), "verifiedAt": now}); score.setdefault("source", {}).update({"humanReviewed": True, "reviewedAt": now})
-                else: raise FileNotFoundError("Endpoint 不存在。")
-                self.server.songs.save_score(song_id, score); self.server.preparations.invalidate_for_song(song_id)
-                self._json(200, {"score": score}); return
+                    if issues:
+                        raise ValueError(" ".join(issues))
+                    now = utc_now()
+                    score.update({"verificationStatus": "verified", "verifiedBy": str(score.get("verifiedBy") or "teacher-review"), "verifiedAt": now})
+                    score.setdefault("source", {}).update({"humanReviewed": True, "reviewedAt": now})
+                else:
+                    raise FileNotFoundError("Endpoint 不存在。")
+                self.server.songs.save_score(song_id, score)
+                self.server.preparations.invalidate_for_song(song_id)
+                self._json(200, {"score": score})
+                return
             if path == "/bridge/measure-alignment":
+                song = self.server.songs.get_song_by_id(song_id)
+                if not song.get("assets", {}).get("originalAudio"):
+                    raise ValueError("当前为简谱模式，不需要原曲小节校准。")
                 score = self.server.songs.get_score(song_id)
                 calibration = value.get("calibration")
-                if not calibration: raise ValueError("请先标记校准开始和结束。")
+                if not calibration:
+                    raise ValueError("请先标记校准开始和结束。")
                 alignment = {**value, "schemaVersion": "2.0.0", "songId": song_id, "sourceScoreVerifiedAt": score.get("verifiedAt"), "updatedAt": utc_now(), "calibrationStatus": "teacher_verified"}
-                if not alignment_ready(score, alignment): raise ValueError("Measure Alignment 无效。")
-                self.server.songs.save_artifact(song_id, "measure-alignment.json", alignment); self.server.preparations.invalidate_readiness_for_song(song_id)
-                self._json(200, {"alignment": alignment}); return
+                if not alignment_ready(score, alignment):
+                    raise ValueError("Measure Alignment 无效。")
+                self.server.songs.save_artifact(song_id, "measure-alignment.json", alignment)
+                self.server.preparations.invalidate_readiness_for_song(song_id)
+                self._json(200, {"alignment": alignment})
+                return
             raise FileNotFoundError("Endpoint 不存在。")
-        except FileNotFoundError as error: self._json(404, error=str(error), code="NOT_FOUND")
-        except PermissionError as error: self._json(403, error=str(error), code="FORBIDDEN")
-        except Exception as error: self._json(400, error=str(error), code="VALIDATION_ERROR")
+        except FileNotFoundError as error:
+            self._json(404, error=str(error), code="NOT_FOUND")
+        except PermissionError as error:
+            self._json(403, error=str(error), code="FORBIDDEN")
+        except Exception as error:
+            self._json(400, error=str(error), code="VALIDATION_ERROR")
 
     def do_POST(self) -> None:
         path, query = self._url()
         if not path.startswith("/bridge/") or not self._authorized(query):
-            self._json(403, error="Review session token 无效。", code="TOKEN_REQUIRED"); return
+            self._json(403, error="Review session token 无效。", code="TOKEN_REQUIRED")
+            return
         self.server.last_activity = time.monotonic()
         try:
             if path == "/bridge/close":
-                self.server.stop_requested = True; self._json(200, {"closed": True}); return
+                self.server.stop_requested = True
+                self._json(200, {"closed": True})
+                return
             raise FileNotFoundError("Endpoint 不存在。")
-        except FileNotFoundError as error: self._json(404, error=str(error), code="NOT_FOUND")
-        except Exception as error: self._json(400, error=str(error), code="BRIDGE_OPERATION_FAILED")
+        except FileNotFoundError as error:
+            self._json(404, error=str(error), code="NOT_FOUND")
+        except Exception as error:
+            self._json(400, error=str(error), code="BRIDGE_OPERATION_FAILED")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--song-id", required=True); parser.add_argument("--token", required=True); parser.add_argument("--port-file", required=True, type=Path); parser.add_argument("--idle-timeout", type=int, default=900); args = parser.parse_args()
-    if not SONG_ID.fullmatch(args.song_id) or not (ROOT / "workspace" / "songs" / args.song_id / "song.json").is_file(): return 2
-    if len(args.token) < 32: return 2
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--song-id", required=True)
+    parser.add_argument("--token", required=True)
+    parser.add_argument("--port-file", required=True, type=Path)
+    parser.add_argument("--idle-timeout", type=int, default=900)
+    args = parser.parse_args()
+    if not SONG_ID.fullmatch(args.song_id) or not (ROOT / "workspace" / "songs" / args.song_id / "song.json").is_file():
+        return 2
+    if len(args.token) < 32:
+        return 2
     server = ReviewServer(("127.0.0.1", 0), Handler, song_id=args.song_id, token=args.token, idle_timeout=max(30, min(3600, args.idle_timeout)))
     server.timeout = 1
     args.port_file.write_text(json.dumps({"port": server.server_port, "pid": os.getpid()}), encoding="utf-8")
@@ -205,8 +281,10 @@ def main() -> int:
         while not server.stop_requested and time.monotonic() - server.last_activity < server.idle_timeout:
             server.handle_request()
     finally:
-        server.server_close(); args.port_file.unlink(missing_ok=True)
+        server.server_close()
+        args.port_file.unlink(missing_ok=True)
     return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
