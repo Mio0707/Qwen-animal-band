@@ -1,3 +1,5 @@
+import { resolveMeasureOrigin } from "./lesson-segments.js";
+
 function sortedMeasures(score) {
   return [...(score?.measures ?? [])]
     .filter((measure) => Number.isInteger(Number(measure?.number)))
@@ -116,9 +118,6 @@ export function resolveMeasureStarts(score, alignment, songDuration = null) {
     }
     result.push({ measure, startSec, source, sentinel: measure === sentinelMeasure });
   }
-  // A teacher may fine-tune a complete teaching segment after the first
-  // calibration. Interpolate only inside that segment so event timing and
-  // boundary markers use the same saved window as segment playback.
   for (const segment of normalized.segments) {
     const count = segment.endMeasure - segment.startMeasure + 1;
     const secondsPerMeasureInSegment = (segment.endSec - segment.startSec) / count;
@@ -162,9 +161,19 @@ export function alignmentCoverage(score, alignment) {
   const measures = sortedMeasures(score);
   const normalized = normalizeMeasureAlignment(alignment, score);
   const secondsPerMeasure = predictedSecondsPerMeasure(normalized);
+  const originMeasure = resolveMeasureOrigin(score, measures);
+  const originReady = Boolean(
+    originMeasure != null
+    && (Number(normalized.calibration?.startMeasure) === Number(originMeasure)
+      || normalized.anchors.some((item) => Number(item.measure) === Number(originMeasure)))
+  );
+  const leadInMeasureCount = Math.max(0, measures.findIndex((measure) => Number(measure.number) === Number(originMeasure)));
   return {
-    ready: measures.length > 0 && Number.isFinite(secondsPerMeasure) && secondsPerMeasure > 0,
+    ready: measures.length > 0 && Number.isFinite(secondsPerMeasure) && secondsPerMeasure > 0 && originReady,
     calibrationReady: Boolean(normalized.calibration),
+    originReady,
+    originMeasure,
+    leadInMeasureCount,
     anchorCount: normalized.anchors.length,
     measureCount: measures.length,
     firstMeasure: measures[0]?.number ?? null,
