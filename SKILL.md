@@ -5,7 +5,7 @@ description: Turn a numbered-score image, with optional original song audio, int
 
 # Animal Band × QwenWork
 
-Keep curriculum decisions, score state, recipes, readiness, and exports inside the repository runtime. Do not edit workspace JSON directly and do not invent grade suitability in conversation.
+Keep curriculum decisions, score state, recipes, readiness, and exports inside the repository runtime. Do not edit workspace JSON directly and do not invent grade suitability in conversation. Prefer repository tools and deterministic code over extra AI reasoning or generated substitutes.
 
 ## Start
 
@@ -30,12 +30,12 @@ Do not require audio when the teacher only has a score.
 
 Use only `python3 scripts/animal_band.py <command> ...` for state changes.
 
-1. Require the numbered-score image. Require original song audio only for `SCORE_AUDIO`. Read [references/INFERENCE_CONTRACT.md](references/INFERENCE_CONTRACT.md), then inspect the uploaded score image with **one whole-score QwenWork native multimodal inference pass** and save only the required score JSON to a temporary untracked file. Do not call OCR/model once per measure and do not automatically run a second recognition pass. In the inference JSON, keep music notes and lyric alignment separate: every measure must emit its own zero-based `lyricGroups[]` according to the contract; never flatten `lyricsText` across all non-rest notes. If a local lyric position is unclear, leave that group unassigned and add a warning instead of shifting later lyrics. Then run:
+1. Require the numbered-score image. Require original song audio only for `SCORE_AUDIO`. Read [references/INFERENCE_CONTRACT.md](references/INFERENCE_CONTRACT.md), inspect the whole score once with QwenWork native multimodal reasoning, save the required score JSON to a temporary untracked file, then run:
    - score only: `recognize-score --score-image <image> --title <title> --inference-input <file>`
    - score + audio: add `--audio <audio>`.
-   Never call a model API from the repository.
+   Do not run model/OCR once per measure or automatically repeat recognition. Never call a model API from the repository.
 2. Read the command result's `resourceMode`, `availableActivities`, and `lockedActivities`. Say: “简谱识别完成。我已经把识别结果整理成可校对的简谱。请完成一次人工检查后再生成课堂。”
-3. Run `open-score-review --song-id <id>` and provide or open the returned “检查乐谱” URL. The teacher checks every measure and selects singing segmentation. The panel now also includes “设置小节起点”：如果谱面前面有前奏、弱起、无歌词前导音或教材截取段，教师可以把任意已识别谱面小节设为教学上的“第1小节”；此前的小节保留在 Verified Score 中，但作为 lead-in，不进入课堂教学分段和后续原曲小节对齐。In `SCORE_AUDIO`, the same panel also requires original-audio Measure Alignment, and that alignment must start from the teacher-defined first teaching measure. In `SCORE_ONLY`, audio calibration is skipped automatically. Use the same URL in an embedded web tray when supported; otherwise open it in the local browser.
+3. Run `open-score-review --song-id <id>`. Use only the returned `reviewUrl` for “检查乐谱”; never generate or substitute another review page. If the returned page cannot be opened, stop and report the blocker. The teacher checks every measure and selects singing segmentation. The panel also includes “设置小节起点”：如果谱面前面有前奏、弱起、无歌词前导音或教材截取段，教师可以把任意已识别谱面小节设为教学上的“第1小节”；此前的小节保留在 Verified Score 中，但作为 lead-in，不进入课堂教学分段和后续原曲小节对齐。In `SCORE_AUDIO`, the same panel also requires original-audio Measure Alignment, and that alignment must start from the teacher-defined first teaching measure. In `SCORE_ONLY`, audio calibration is skipped automatically. Use the same URL in an embedded web tray when supported; otherwise open it in the local browser.
 4. After the teacher returns, run `score-status`.
    - Always require `verificationStatus = verified`.
    - Require `measureAlignmentReady = true` only when `measureAlignmentRequired = true`.
