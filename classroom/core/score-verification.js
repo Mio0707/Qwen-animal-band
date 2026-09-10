@@ -24,7 +24,14 @@ export function collectScoreIssues(score) {
       continue;
     }
     const contentDuration = measure.notes.length ? Math.max(...measure.notes.map((note) => Number(note.beat) + Number(note.duration))) : 0;
-    if (!measure.pickup && Math.abs(contentDuration - expected) > 0.001) errors.push(issue("MEASURE_DURATION_MISMATCH", "blocking", `measures[${measureIndex}].notes`, `小节共 ${contentDuration} 拍，应为 ${expected} 拍。`));
+    if (Math.abs(contentDuration - expected) > 0.001) {
+      warnings.push(issue(
+        "MEASURE_DURATION_MISMATCH",
+        "warning",
+        `measures[${measureIndex}].notes`,
+        `当前小节共 ${contentDuration} 拍，拍号通常为 ${expected} 拍；如原谱如此可直接确认。`
+      ));
+    }
     for (const [noteIndex, note] of measure.notes.entries()) {
       const path = `measures[${measureIndex}].notes[${noteIndex}]`;
       if (!Number.isInteger(note.degree) || note.degree < 0 || note.degree > 7) errors.push(issue("INVALID_DEGREE", "blocking", `${path}.degree`, "degree 必须为 0–7。"));

@@ -28,16 +28,20 @@ SONG_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 
 
 def score_issues(score: dict) -> list[str]:
+    """Return only blocking review issues.
+
+    Measure duration mismatches are intentionally advisory: numbered scores may
+    contain pickups, lead-ins, incomplete bars, or source-specific bar lengths.
+    The UI still warns about them, but they must never block human confirmation.
+    """
     issues = []
-    meter = score.get("meter") or {}
-    expected = float(meter.get("beats", 0)) * 4 / float(meter.get("unit", 4) or 4)
     if not (1 <= int(score.get("teachingConfig", {}).get("singingMeasuresPerUnit", 0)) <= 8):
         issues.append("请选择演唱教学每几小节一段。")
-    for index, measure in enumerate(score.get("measures") or []):
-        total = sum(float(note.get("duration", 0)) for note in measure.get("notes") or [])
-        if not measure.get("pickup") and abs(total - expected) > 0.001:
-            issues.append(f"第 {index + 1} 小节拍数不正确。")
-    issues.extend(str(item.get("message") or item.get("code")) for item in score.get("warnings", []) if item.get("severity") == "blocking")
+    issues.extend(
+        str(item.get("message") or item.get("code"))
+        for item in score.get("warnings", [])
+        if item.get("severity") == "blocking" and item.get("code") != "MEASURE_DURATION_MISMATCH"
+    )
     return list(dict.fromkeys(issues))
 
 
