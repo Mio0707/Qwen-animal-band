@@ -1,0 +1,32 @@
+name: Build Skill Package
+
+on:
+  push:
+    branches:
+      - build/skill-package
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build ZIP from release commit
+        run: |
+          mkdir -p dist
+          git archive \
+            --format=zip \
+            --prefix=animal-band-qwenwork/ \
+            b40dd2d00fa66ba2f4adfc380128fbce71cd4fd2 \
+            -o dist/animal-band-qwenwork-b40dd2d.zip
+          ls -lh dist/animal-band-qwenwork-b40dd2d.zip
+
+      - name: Upload Skill ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: animal-band-qwenwork-skill
+          path: dist/animal-band-qwenwork-b40dd2d.zip
+          compression-level: 0
