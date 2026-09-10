@@ -14,27 +14,61 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Inspect release size
+      - name: Prepare clean package
         run: |
-          echo 'Largest tracked files:'
-          git ls-tree -rl b40dd2d00fa66ba2f4adfc380128fbce71cd4fd2 | sort -k4 -n | tail -40
-          echo 'Top-level sizes:'
-          git archive b40dd2d00fa66ba2f4adfc380128fbce71cd4fd2 | tar -x -C /tmp/animal-band-size
-        continue-on-error: true
+          set -euo pipefail
+          rm -rf package-root dist
+          mkdir -p package-root dist
+          git archive b40dd2d00fa66ba2f4adfc380128fbce71cd4fd2 | tar -x -C package-root
+          printf 'sourceCommit=b40dd2d00fa66ba2f4adfc380128fbce71cd4fd2\npackageType=qwenwork-upload\n' > package-root/PACKAGE_VERSION.txt
 
-      - name: Build ZIP from release commit
+      - name: Optimize large classroom media
         run: |
-          mkdir -p dist
-          git archive \
-            --format=zip \
-            --prefix=animal-band-qwenwork/ \
-            b40dd2d00fa66ba2f4adfc380128fbce71cd4fd2 \
-            -o dist/animal-band-qwenwork-b40dd2d.zip
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pngquant
+          find package-root -type f -name '*.png' -size +150k -print0 | \
+            xargs -0 -r -n1 pngquant --force --ext .png --quality=55-80 --speed 1 || true
+          if command -v ffmpeg >/dev/null 2>&1; then
+            while IFS= read -r -d '' file; do
+              tmp="${file}.tmp.wav"
+              ffmpeg -loglevel error -y -i "$file" -ac 1 -ar 22050 -c:a pcm_s16le "$tmp"
+              mv "$tmp" "$file"
+            done < <(find package-root/classroom/assets/audio/rhythm/patterns -type f -name '*.wav' -print0)
+          fi
+
+      - name: Validate package
+        working-directory: package-root
+        run: |
+          set -euo pipefail
+          python3 scripts/lyric_groups_test.py
+          python3 scripts/doctor.py --json > /tmp/doctor.json || true
+          cat /tmp/doctor.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/doctor.json', encoding='utf-8'))
+          if not p.get('ready'):
+              raise SystemExit('doctor ready=false')
+          PY
+
+      - name: Build ZIP
+        run: |
+          set -euo pipefail
+          mv package-root animal-band-qwenwork
+          zip -q -9 -r dist/animal-band-qwenwork-b40dd2d.zip animal-band-qwenwork
           ls -lh dist/animal-band-qwenwork-b40dd2d.zip
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('dist/animal-band-qwenwork-b40dd2d.zip')
+          size=p.stat().st_size
+          print(f'ZIP_BYTES={size}')
+          if size > 10 * 1024 * 1024:
+              raise SystemExit('Skill ZIP exceeds 10 MiB target')
+          PY
 
       - name: Upload Skill ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: animal-band-qwenwork-skill
+          name: animal-band-qwenwork-skill-slim
           path: dist/animal-band-qwenwork-b40dd2d.zip
           compression-level: 0
