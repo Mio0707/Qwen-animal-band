@@ -147,7 +147,6 @@ def normalize_score(
                 lyric = None
             lyric_syllable_id = None
             if lyric_continuation and previous_lyric and previous_syllable_id:
-                # One lyric syllable spans multiple notes: continuation notes do not repeat the lyric text.
                 lyric = None
                 lyric_syllable_id = previous_syllable_id
             elif lyric:
@@ -182,13 +181,15 @@ def normalize_score(
         if not normalized_notes:
             continue
         content_duration = round(max(note["beat"] + note["duration"] for note in normalized_notes), 3)
-        if not pickup and abs(content_duration - expected_measure_beats) > 0.001:
+        if abs(content_duration - expected_measure_beats) > 0.001:
             warnings.append(warning(
-                "MEASURE_DURATION_MISMATCH", "blocking", f"measures[{measure_index}].notes",
-                f"第 {number} 小节共 {content_duration} 拍，应为 {expected_measure_beats} 拍。",
+                "MEASURE_DURATION_MISMATCH", "warning", f"measures[{measure_index}].notes",
+                f"第 {number} 小节共 {content_duration} 拍，拍号通常为 {expected_measure_beats} 拍；如原谱如此可直接确认。",
             ))
         measures.append({"number": number, "pickup": pickup, "notes": normalized_notes})
-        absolute_offset += content_duration if pickup else expected_measure_beats
+        # Use the actual notated content duration as the timeline source of truth.
+        # Incomplete/extended measures are legal in source material and are only warned about.
+        absolute_offset += content_duration
 
     if not measures:
         raise ValueError("Qwen 输出中没有可用音符。")
