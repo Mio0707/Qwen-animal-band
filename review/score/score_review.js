@@ -63,7 +63,6 @@ export function scoreDurationLabel(duration) {
 }
 
 export function recalculateScoreTiming(targetScore) {
-  const expected = targetScore.meter.beats * 4 / targetScore.meter.unit;
   let offset = 0;
   targetScore.measures.forEach((measure) => {
     let beat = 0;
@@ -72,7 +71,9 @@ export function recalculateScoreTiming(targetScore) {
       note.startBeat = Number((offset + beat).toFixed(3));
       beat += Number(note.duration);
     });
-    offset += measure.pickup ? beat : expected;
+    // The source score may contain pickup, lead-in, incomplete, or extended measures.
+    // Preserve the actual notated duration instead of inserting phantom beats.
+    offset += beat;
   });
   return targetScore;
 }
@@ -111,7 +112,7 @@ function issuesForMeasure(measureIndex) {
 }
 
 export function issuesBlockingMeasureConfirmation(targetScore, measureIndex) {
-  const structuralCodes = new Set(["MEASURE_DURATION_MISMATCH", "INVALID_DEGREE", "INVALID_OCTAVE", "INVALID_DURATION", "LYRIC_ON_REST", "MISSING_PITCH", "BLOCKING_REVIEW_ERROR"]);
+  const structuralCodes = new Set(["INVALID_DEGREE", "INVALID_OCTAVE", "INVALID_DURATION", "LYRIC_ON_REST", "MISSING_PITCH", "BLOCKING_REVIEW_ERROR"]);
   return collectScoreIssues(targetScore).errors.filter((item) => item.path.startsWith(`measures[${measureIndex}]`) && structuralCodes.has(item.code));
 }
 
@@ -135,8 +136,8 @@ function renderMeasureEditor() {
   const expected = expectedMeasureBeats(measure);
   const valid = issuesForMeasure(currentMeasureIndex).length === 0;
   document.querySelector("#measure-editor").innerHTML = `<article class="score-measure-card">
-    <div class="score-measure-head"><div><strong>第 ${measure.number} 小节</strong><small>当前 ${actual} 拍 / 应为 ${expected} 拍</small></div><span class="score-review-state ${confirmedMeasures.has(currentMeasureIndex) ? "done" : ""}">${confirmedMeasures.has(currentMeasureIndex) ? "已确认" : "待确认"}</span></div>
-    ${Math.abs(actual - expected) < .001 ? "" : `<div class="measure-warning">长度需要调整：当前 ${actual} 拍，应为 ${expected} 拍。</div>`}
+    <div class="score-measure-head"><div><strong>第 ${measure.number} 小节</strong><small>当前 ${actual} 拍 / 拍号通常 ${expected} 拍</small></div><span class="score-review-state ${confirmedMeasures.has(currentMeasureIndex) ? "done" : ""}">${confirmedMeasures.has(currentMeasureIndex) ? "已确认" : "待确认"}</span></div>
+    ${Math.abs(actual - expected) < .001 ? "" : `<div class="measure-warning">拍数提示：当前 ${actual} 拍，拍号通常为 ${expected} 拍；如原谱如此可直接确认。</div>`}
     <div class="score-note-row">${measure.notes.map(renderNoteCard).join("")}<button class="score-add-note" data-add-note>＋ 添加音符</button></div>${renderDurationHelp()}
   </article>`;
   const confirm = document.querySelector("#confirm-measure");
