@@ -14,6 +14,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Inspect release size
+        run: |
+          echo 'Largest tracked files:'
+          git ls-tree -rl b40dd2d00fa66ba2f4adfc380128fbce71cd4fd2 | sort -k4 -n | tail -40
+          echo 'Top-level sizes:'
+          git archive b40dd2d00fa66ba2f4adfc380128fbce71cd4fd2 | tar -x -C /tmp/animal-band-size
+        continue-on-error: true
+
       - name: Build ZIP from release commit
         run: |
           mkdir -p dist
