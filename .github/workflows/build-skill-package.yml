@@ -27,8 +27,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq pngquant
-          find package-root -type f -name '*.png' -size +80k -print0 | \
-            xargs -0 -r -n1 pngquant --force --ext .png --quality=35-60 --speed 1 || true
+          find package-root -type f -name '*.png' -size +40k -print0 | \
+            xargs -0 -r -n1 pngquant --force --ext .png --quality=30-55 --speed 1 || true
           if command -v ffmpeg >/dev/null 2>&1; then
             while IFS= read -r -d '' file; do
               tmp="${file}.tmp.wav"
