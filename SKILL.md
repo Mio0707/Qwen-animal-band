@@ -30,7 +30,7 @@ Do not require audio when the teacher only has a score.
 
 Use only `python3 scripts/animal_band.py <command> ...` for state changes.
 
-1. Require the numbered-score image. Require original song audio only for `SCORE_AUDIO`. Read [references/INFERENCE_CONTRACT.md](references/INFERENCE_CONTRACT.md), inspect the uploaded score image with QwenWork's native multimodal reasoning, save only the required score JSON to a temporary untracked file, then run:
+1. Require the numbered-score image. Require original song audio only for `SCORE_AUDIO`. Read [references/INFERENCE_CONTRACT.md](references/INFERENCE_CONTRACT.md), then inspect the uploaded score image with **one whole-score QwenWork native multimodal inference pass** and save only the required score JSON to a temporary untracked file. Do not call OCR/model once per measure and do not automatically run a second recognition pass. In the inference JSON, keep music notes and lyric alignment separate: every measure must emit its own zero-based `lyricGroups[]` according to the contract; never flatten `lyricsText` across all non-rest notes. If a local lyric position is unclear, leave that group unassigned and add a warning instead of shifting later lyrics. Then run:
    - score only: `recognize-score --score-image <image> --title <title> --inference-input <file>`
    - score + audio: add `--audio <audio>`.
    Never call a model API from the repository.

@@ -65,6 +65,119 @@ def normalize_meter(candidate: Any, warnings: list[dict[str, str]]) -> tuple[dic
     return {"beats": beats, "unit": unit}, beats * 4 / unit
 
 
+def integer_field(value: Any) -> int | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or not number.is_integer():
+        return None
+    return int(number)
+
+
+def apply_measure_lyric_groups(
+    raw_measure: dict[str, Any],
+    normalized_notes: list[dict[str, Any]],
+    measure_index: int,
+    warnings: list[dict[str, str]],
+    lyric_syllable_index: int,
+) -> tuple[int, list[str]]:
+    raw_groups = raw_measure.get("lyricGroups")
+    if not isinstance(raw_groups, list):
+        warnings.append(warning(
+            "MISSING_MEASURE_LYRIC_GROUPS",
+            "warning",
+            f"measures[{measure_index}].lyricGroups",
+            "该小节缺少 lyricGroups；已保留为空，请在人工校谱时检查歌词。",
+        ))
+        raw_groups = []
+
+    occupied: set[int] = set()
+    recognized: list[str] = []
+    for group_index, raw_group in enumerate(raw_groups[:256]):
+        path = f"measures[{measure_index}].lyricGroups[{group_index}]"
+        if not isinstance(raw_group, dict):
+            warnings.append(warning("INVALID_LYRIC_GROUP", "warning", path, "歌词组格式无效，已忽略。"))
+            continue
+
+        text = str(raw_group.get("text") or "").strip()
+        note_index = integer_field(raw_group.get("noteIndex"))
+        span_notes = integer_field(raw_group.get("spanNotes"))
+        if not text:
+            warnings.append(warning("INVALID_LYRIC_GROUP", "warning", f"{path}.text", "歌词组缺少文字，已忽略。"))
+            continue
+        if note_index is None or not (0 <= note_index < len(normalized_notes)):
+            warnings.append(warning(
+                "INVALID_LYRIC_GROUP",
+                "warning",
+                f"{path}.noteIndex",
+                "歌词组 noteIndex 必须是当前小节内有效的零基音符索引，已忽略。",
+            ))
+            continue
+        if span_notes is None or span_notes < 1:
+            warnings.append(warning(
+                "INVALID_LYRIC_GROUP",
+                "warning",
+                f"{path}.spanNotes",
+                "歌词组 spanNotes 必须是大于等于 1 的整数，已忽略。",
+            ))
+            continue
+
+        end_index = note_index + span_notes
+        if end_index > len(normalized_notes):
+            warnings.append(warning(
+                "INVALID_LYRIC_GROUP",
+                "warning",
+                f"{path}.spanNotes",
+                "歌词组超出当前小节范围，已忽略；不要把歌词延伸到下一小节。",
+            ))
+            continue
+
+        indexes = list(range(note_index, end_index))
+        if any(normalized_notes[index]["rest"] for index in indexes):
+            warnings.append(warning(
+                "INVALID_LYRIC_GROUP",
+                "warning",
+                path,
+                "歌词组覆盖到休止符，已忽略，请人工核对。",
+            ))
+            continue
+        if occupied.intersection(indexes):
+            warnings.append(warning(
+                "OVERLAPPING_LYRIC_GROUP",
+                "warning",
+                path,
+                "歌词组与同一小节内已有歌词组重叠，已忽略。",
+            ))
+            continue
+
+        confidence = round(max(0, min(1, as_number(raw_group.get("confidence"), 1.0))), 3)
+        if confidence < 0.72:
+            warnings.append(warning(
+                "LOW_LYRIC_ALIGNMENT_CONFIDENCE",
+                "warning",
+                f"{path}.confidence",
+                "歌词与音符的视觉对应置信度较低，请人工核对。",
+            ))
+
+        lyric_syllable_index += 1
+        syllable_id = f"syllable_{lyric_syllable_index:03d}"
+        root = normalized_notes[note_index]
+        root["lyric"] = text
+        root["lyricSyllableId"] = syllable_id
+        root["lyricContinuation"] = False
+        for follower_index in indexes[1:]:
+            follower = normalized_notes[follower_index]
+            follower["lyric"] = None
+            follower["lyricSyllableId"] = syllable_id
+            follower["lyricContinuation"] = True
+
+        occupied.update(indexes)
+        recognized.append(text)
+
+    return lyric_syllable_index, recognized
+
+
 def normalize_score(
     candidate: dict[str, Any],
     song_id: str,
@@ -98,12 +211,18 @@ def normalize_score(
     if not isinstance(raw_measures, list) or not raw_measures:
         raise ValueError("Qwen 输出中没有可用 measures。")
 
+    measure_local_lyrics = any(
+        isinstance(item, dict) and "lyricGroups" in item
+        for item in raw_measures
+    )
+
     measures: list[dict[str, Any]] = []
     absolute_offset = 0.0
     lyric_syllable_index = 0
     previous_lyric: str | None = None
     previous_syllable_id: str | None = None
     recognized_lyrics: list[str] = []
+
     for measure_index, raw_measure in enumerate(raw_measures[:256]):
         if not isinstance(raw_measure, dict):
             continue
@@ -139,25 +258,29 @@ def normalize_score(
             if confidence < 0.72:
                 warnings.append(warning("LOW_RECOGNITION_CONFIDENCE", "warning", f"{path}.confidence", "该音符识别置信度较低，需要人工核对。"))
 
-            lyric = raw_note.get("lyric")
-            lyric = str(lyric) if lyric not in (None, "") else None
-            lyric_continuation = bool(raw_note.get("lyricContinuation")) and not rest
-            if rest and lyric:
-                warnings.append(warning("LYRIC_ON_REST", "blocking", f"{path}.lyric", "休止符不能绑定歌词，已移除。"))
-                lyric = None
+            lyric = None
+            lyric_continuation = False
             lyric_syllable_id = None
-            if lyric_continuation and previous_lyric and previous_syllable_id:
-                lyric = None
-                lyric_syllable_id = previous_syllable_id
-            elif lyric:
-                lyric_continuation = False
-                lyric_syllable_index += 1
-                lyric_syllable_id = f"syllable_{lyric_syllable_index:03d}"
-                recognized_lyrics.append(lyric)
-                previous_lyric = lyric
-                previous_syllable_id = lyric_syllable_id
-            else:
-                lyric_continuation = False
+            if not measure_local_lyrics:
+                lyric = raw_note.get("lyric")
+                lyric = str(lyric) if lyric not in (None, "") else None
+                lyric_continuation = bool(raw_note.get("lyricContinuation")) and not rest
+                if rest and lyric:
+                    warnings.append(warning("LYRIC_ON_REST", "blocking", f"{path}.lyric", "休止符不能绑定歌词，已移除。"))
+                    lyric = None
+                if lyric_continuation and previous_lyric and previous_syllable_id:
+                    lyric = None
+                    lyric_syllable_id = previous_syllable_id
+                elif lyric:
+                    lyric_continuation = False
+                    lyric_syllable_index += 1
+                    lyric_syllable_id = f"syllable_{lyric_syllable_index:03d}"
+                    recognized_lyrics.append(lyric)
+                    previous_lyric = lyric
+                    previous_syllable_id = lyric_syllable_id
+                else:
+                    lyric_continuation = False
+
             absolute_pitch, midi_number, frequency = pitch_data(tonic, mode, degree, octave)
             normalized_notes.append({
                 "noteId": f"m{number:03d}_n{note_index + 1:03d}",
@@ -180,6 +303,17 @@ def normalize_score(
 
         if not normalized_notes:
             continue
+
+        if measure_local_lyrics:
+            lyric_syllable_index, local_lyrics = apply_measure_lyric_groups(
+                raw_measure,
+                normalized_notes,
+                measure_index,
+                warnings,
+                lyric_syllable_index,
+            )
+            recognized_lyrics.extend(local_lyrics)
+
         content_duration = round(max(note["beat"] + note["duration"] for note in normalized_notes), 3)
         if abs(content_duration - expected_measure_beats) > 0.001:
             warnings.append(warning(
@@ -198,6 +332,8 @@ def normalize_score(
     confidence = round(max(0, min(1, as_number(candidate.get("confidence"), 0.5))), 3)
     raw_lyrics_text = candidate.get("lyricsText")
     lyrics_text = str(raw_lyrics_text).strip() if raw_lyrics_text not in (None, "") else "".join(recognized_lyrics)
+    lyric_alignment_mode = "measure_local_groups" if measure_local_lyrics else "legacy_note_fields"
+
     return {
         "songId": song_id,
         "title": str(title or candidate.get("title") or song_id)[:200],
@@ -216,7 +352,11 @@ def normalize_score(
             "recognizedAt": timestamp,
             "reviewedAt": None,
         },
-        "recognitionMetadata": {"confidence": confidence, **(metadata or {})},
+        "recognitionMetadata": {
+            **(metadata or {}),
+            "confidence": confidence,
+            "lyricAlignmentMode": lyric_alignment_mode,
+        },
         "verificationStatus": "draft",
         "verifiedBy": None,
         "verifiedAt": None,
