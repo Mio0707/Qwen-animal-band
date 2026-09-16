@@ -40,6 +40,7 @@ https://github.com/Mio0707/Qwen-animal-band.git
 
 简谱模式后续可直接补充音频升级为完整模式，不需要重新识谱。
 
+
 ## Recognition Pipeline v3
 
 识谱子系统与课程 Engine 解耦，目标是支持 1–6 年级不同复杂度的简谱输入。核心原则：
@@ -47,7 +48,6 @@ https://github.com/Mio0707/Qwen-animal-band.git
 - “一轮识谱”指所有计划区域各读取一次，不等于必须整页只调用一次视觉模型。
 - 检测到两个及以上可靠 music system 时按完整 system 并行读取；密集谱面自动提高 crop 分辨率；单 system 或布局不稳定时保守退回 whole-page。
 - 每个 system 单独输出 JSON，本地代码负责合并与全局小节编号，避免模型跨区域对账。
-- **小节线优先**：先按原谱中可见小节线确定小节结构，再识别每小节内的音高、时值与歌词；时值合计只做异常提示，绝不反向拆分/合并小节。
 - Source Coverage 先确认没有漏 system，再做音乐结构检查。拍数自洽不能证明整页完整。
 - 只允许缺失/结构损坏的区域做一次 targeted repair；视觉模糊直接进入人工核谱。
 - 识谱阶段不使用数值 confidence。
@@ -104,3 +104,7 @@ python3 scripts/animal_band.py --help
 ## 许可提醒
 
 公开或商业分发前请阅读 [LICENSES.md](LICENSES.md)。Web Sampler 的来源、MIT 许可与署名已经核验并随包保留。
+## v3.2.0 识谱结构原则
+
+识谱采用“**小节线优先**”：先按原谱中可见的小节线确定小节结构，再识别每小节内的音高、时值和歌词。时值合计只用于异常提示，**不会反过来拆分或合并小节**。这样单个时值识别错误不会造成后续所有小节错位。
+

@@ -1,4 +1,4 @@
-import { loadScore, saveDraft } from "./adapters/local_workspace_adapter.js";
+import { loadReviewStatus, loadScore, saveDraft } from "./adapters/local_workspace_adapter.js";
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
@@ -24,7 +24,11 @@ async function mount() {
   const container = document.querySelector("#score-origin-control");
   if (!container) return;
   const params = new URLSearchParams(location.search);
-  const songId = params.get("songId");
+  let songId = params.get("songId");
+  if (!songId) {
+    try { songId = (await loadReviewStatus())?.songId ?? null; }
+    catch { songId = null; }
+  }
   if (!songId) {
     container.hidden = true;
     return;
@@ -115,3 +119,4 @@ async function mount() {
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount, { once: true });
 else mount();
+window.addEventListener("animal-band:score-structure-saved", () => mount());

@@ -1,5 +1,8 @@
 const params = new URLSearchParams(globalThis.location?.search || "");
 const runtimeSession = globalThis.__ANIMAL_BAND_REVIEW_SESSION__ || {};
+// QwenWork opens only the localhost root. The bridge injects a short-lived
+// token into page memory so API/media requests do not depend on third-party
+// iframe cookies. Query-token support remains for explicit local/debug URLs.
 const token = runtimeSession.token || params.get("token") || "";
 
 async function request(path, options = {}) {
@@ -30,7 +33,9 @@ export async function verifyScore(songId, score) {
   try {
     const alignment = await loadMeasureAlignment(songId);
     if (alignment?.calibration) await saveMeasureAlignment(songId, alignment);
-  } catch {}
+  } catch {
+    // SCORE_ONLY has no alignment; verification must remain independent of audio.
+  }
   return result;
 }
 export async function loadSourceImage(songId) { return asset(`/bridge/source-image?songId=${encodeURIComponent(songId)}`); }
