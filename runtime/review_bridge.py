@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Short-lived, token-protected loopback bridge for the Score Review UI."""
+"""Short-lived, token-protected bridge for the Score Review UI."""
 from __future__ import annotations
 
 import argparse
@@ -22,9 +22,11 @@ for candidate in (ROOT, RUNTIME, RUNTIME / "score_recognition"):
 from repositories.persistence_utils import utc_now  # noqa: E402
 from repositories.preparation_repository import PreparationRepository  # noqa: E402
 from repositories.song_repository import SongRepository  # noqa: E402
+from workspace_paths import resolve_workspace  # noqa: E402
 
 MAX_BODY = 4 * 1024 * 1024
 SONG_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
+WORKSPACE = resolve_workspace(ROOT)
 
 
 def score_issues(score: dict) -> list[str]:
@@ -60,6 +62,18 @@ def measure_origin(score: dict | None) -> int | None:
     return requested if requested in valid else int(measures[0]["number"])
 
 
+def measure_structure_signature(score: dict | None) -> tuple[tuple[str, ...], ...]:
+    """Stable signature for bar grouping, independent of beat recalculation.
+
+    Moving the same notes across barlines changes the nested grouping and must
+    invalidate any previously calibrated original-audio measure alignment.
+    """
+    return tuple(
+        tuple(str(note.get("noteId") or "") for note in (measure.get("notes") or []))
+        for measure in ((score or {}).get("measures") or [])
+    )
+
+
 def alignment_ready(score: dict, alignment: dict | None) -> bool:
     calibration = (alignment or {}).get("calibration") or {}
     origin = measure_origin(score)
@@ -73,7 +87,7 @@ def alignment_ready(score: dict, alignment: dict | None) -> bool:
 
 class ReviewServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    allow_reuse_address = True
 
     def __init__(self, address, handler, *, song_id: str, token: str, idle_timeout: int):
         super().__init__(address, handler)
@@ -82,8 +96,8 @@ class ReviewServer(ThreadingHTTPServer):
         self.idle_timeout = idle_timeout
         self.last_activity = time.monotonic()
         self.stop_requested = False
-        self.songs = SongRepository(ROOT / "workspace")
-        self.preparations = PreparationRepository(ROOT / "workspace")
+        self.songs = SongRepository(WORKSPACE)
+        self.preparations = PreparationRepository(WORKSPACE)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -99,7 +113,8 @@ class Handler(BaseHTTPRequestHandler):
         return value.path, parse_qs(value.query)
 
     def _authorized(self, query: dict) -> bool:
-        return query.get("token", [""])[0] == self.server.token
+        query_token = query.get("token", [""])[0]
+        return bool(query_token) and query_token == self.server.token
 
     def _json(self, status: int, data=None, error: str | None = None, code: str = "BRIDGE_ERROR") -> None:
         payload = {"ok": error is None}
@@ -138,8 +153,8 @@ class Handler(BaseHTTPRequestHandler):
         if not public:
             raise FileNotFoundError("资源不存在。")
         relative = str(public).removeprefix("data/")
-        song_root = (ROOT / "workspace" / "songs" / song_id).resolve()
-        path = (ROOT / "workspace" / relative).resolve()
+        song_root = (WORKSPACE / "songs" / song_id).resolve()
+        path = (WORKSPACE / relative).resolve()
         if song_root not in path.parents or not path.is_file():
             raise PermissionError("资源路径无效。")
         body = path.read_bytes()
@@ -155,7 +170,9 @@ class Handler(BaseHTTPRequestHandler):
         for prefix, root in roots.items():
             if not path.startswith(prefix):
                 continue
-            relative = path[len(prefix):] or "index.html"
+            relative = path[len(prefix):]
+            if not relative or relative == "review_shell.tmpl":
+                return False
             target = (root / relative).resolve()
             if root.resolve() not in target.parents or not target.is_file():
                 self.send_error(404)
@@ -170,8 +187,52 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def do_HEAD(self) -> None:
+        path, _query = self._url()
+        if path == "/":
+            self.server.last_activity = time.monotonic()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def do_GET(self) -> None:
         path, query = self._url()
+        if path == "/":
+            self.server.last_activity = time.monotonic()
+            template = (ROOT / "review" / "score" / "review_shell.tmpl").read_text(encoding="utf-8")
+            session = json.dumps({
+                "token": self.server.token,
+                "songId": self.server.song_id,
+                "mode": "teacher",
+                "expiresInSec": int(self.server.idle_timeout),
+            }, ensure_ascii=False).replace("</", "<\\/")
+            bootstrap = (
+                '<base href="/review/score/">\n'
+                f'  <script>window.__ANIMAL_BAND_REVIEW_SESSION__ = Object.freeze({session});</script>'
+            )
+            html = template.replace("<head>", f"<head>\n  {bootstrap}", 1)
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/review/score/":
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
         if self._static(path):
             return
         if not path.startswith("/bridge/") or not self._authorized(query):
@@ -181,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             song_id = self._song_id(query) if path != "/bridge/status" else self.server.song_id
             if path == "/bridge/status":
-                self._json(200, {"running": True, "songId": song_id, "loopbackOnly": True})
+                self._json(200, {"running": True, "songId": song_id, "bindHost": self.server.server_address[0], "tokenProtected": True})
             elif path == "/bridge/resources":
                 song = self.server.songs.get_song_by_id(song_id)
                 assets = song.get("assets", {})
@@ -218,6 +279,7 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/bridge/score/"):
                 previous_score = self.server.songs.get_score(song_id)
                 previous_origin = measure_origin(previous_score)
+                previous_structure = measure_structure_signature(previous_score)
                 score = deepcopy(value)
                 score["songId"] = song_id
                 if path.endswith("/draft"):
@@ -242,11 +304,17 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     raise FileNotFoundError("Endpoint 不存在。")
                 next_origin = measure_origin(score)
+                next_structure = measure_structure_signature(score)
+                structure_changed = previous_structure != next_structure
                 self.server.songs.save_score(song_id, score)
-                if previous_origin != next_origin:
+                if previous_origin != next_origin or structure_changed:
                     self.server.songs.delete_artifact(song_id, "measure-alignment.json")
                 self.server.preparations.invalidate_for_song(song_id)
-                self._json(200, {"score": score, "measureOriginChanged": previous_origin != next_origin})
+                self._json(200, {
+                    "score": score,
+                    "measureOriginChanged": previous_origin != next_origin,
+                    "measureStructureChanged": structure_changed,
+                })
                 return
             if path == "/bridge/measure-alignment":
                 song = self.server.songs.get_song_by_id(song_id)
@@ -296,12 +364,14 @@ def main() -> int:
     parser.add_argument("--token", required=True)
     parser.add_argument("--port-file", required=True, type=Path)
     parser.add_argument("--idle-timeout", type=int, default=900)
+    parser.add_argument("--host", default="0.0.0.0", choices=("0.0.0.0", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
-    if not SONG_ID.fullmatch(args.song_id) or not (ROOT / "workspace" / "songs" / args.song_id / "song.json").is_file():
+    if not SONG_ID.fullmatch(args.song_id) or not (WORKSPACE / "songs" / args.song_id / "song.json").is_file():
         return 2
     if len(args.token) < 32:
         return 2
-    server = ReviewServer(("127.0.0.1", 0), Handler, song_id=args.song_id, token=args.token, idle_timeout=max(30, min(3600, args.idle_timeout)))
+    server = ReviewServer((args.host, args.port), Handler, song_id=args.song_id, token=args.token, idle_timeout=max(30, min(3600, args.idle_timeout)))
     server.timeout = 1
     args.port_file.write_text(json.dumps({"port": server.server_port, "pid": os.getpid()}), encoding="utf-8")
     try:

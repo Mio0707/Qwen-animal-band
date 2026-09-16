@@ -8,11 +8,15 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "runtime") not in sys.path:
+    sys.path.insert(0, str(ROOT / "runtime"))
+from workspace_paths import resolve_workspace  # noqa: E402
 
 
 def main() -> int:
-    for name in ("songs", "preparations", "exports"):
-        target = ROOT / "workspace" / name
+    workspace = resolve_workspace(ROOT)
+    for name in ("songs", "preparations", "exports", "recognition-prep-v3"):
+        target = workspace / name
         target.mkdir(parents=True, exist_ok=True)
         (target / ".gitkeep").touch(exist_ok=True)
     doctor = subprocess.run([sys.executable, str(ROOT / "scripts" / "doctor.py"), "--json"], text=True, capture_output=True, cwd=ROOT)
@@ -28,6 +32,9 @@ def main() -> int:
     smoke = subprocess.run([sys.executable, str(ROOT / "scripts" / "smoke_test.py")], cwd=ROOT, env=env)
     if smoke.returncode != 0:
         return smoke.returncode
+    layout_test = subprocess.run([sys.executable, str(ROOT / "scripts" / "score_layout_test.py")], cwd=ROOT, env=env)
+    if layout_test.returncode != 0:
+        return layout_test.returncode
     print("ANIMAL_BAND_READY")
     return 0
 

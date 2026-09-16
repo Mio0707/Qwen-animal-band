@@ -1,28 +1,24 @@
 # Score Contract
 
-识谱固定经过 QwenWork 原生图片理解 → 结构化 inference JSON → Local CLI normalization → Draft Score。仓库运行时不调用模型 API、不读取 API Key。AI 输出永远不能直接成为 Verified Score。
+识谱固定经过 **Recognition Plan → QwenWork 原生图片理解 → per-region compact JSON → Local CLI deterministic merge/normalization → Draft Score**。仓库运行时不调用模型 API、不读取 API Key。AI 输出永远不能直接成为 Verified Score。旧版 aggregate / verbose inference JSON 继续兼容。
 
 正常流程通过 `open-score-review` 打开专业面板，逐小节完成 Draft → Reviewed → Verified。`score-status` 必须同时确认 Verified 与 Measure Alignment Ready。`verify-score` 仍作为聊天式简单修改和测试 fallback，只接受明确的 `confirmed=true`。乐谱被修改或重新确认后，Material Match、Learning Profile、Lesson Recipe 与 Readiness 必须失效并重新生成。
 
 ## Lyric Alignment
 
-新的 QwenWork 识谱 inference 不再直接把整首歌词顺序写进 `notes[].lyric`。整张谱仍只做一次多模态识别，但每个小节独立输出 `lyricGroups[]`：
+Recognition v3 不再要求模型一次生成整首 aggregate。识谱前由 `prepare-score-recognition` 生成确定性计划：简单/不规则页面走 whole-page；常规教材页按完整 music system 裁剪并单轮并行读取。每个 system 独立保存 JSON，再由 Local CLI 合并。Source Coverage 依据计划中的 required region 校验，因此“所有已识别小节都满足拍号”不能被当作“整页没有漏谱”的证据。每个小节用 `l[]` 保存局部歌词对应关系（Local CLI 会展开为 `lyricGroups[]`）：
 
 ```json
 {
-  "number": 12,
-  "notes": [
-    {"degree": 5, "octave": 0, "beat": 0, "duration": 0.5, "rest": false, "confidence": 0.98},
-    {"degree": 6, "octave": 0, "beat": 0.5, "duration": 0.5, "rest": false, "confidence": 0.97}
-  ],
-  "lyricGroups": [
-    {"text": "我们", "noteIndex": 0, "spanNotes": 1, "confidence": 0.96},
-    {"text": "爱", "noteIndex": 1, "spanNotes": 1, "confidence": 0.95}
-  ]
+  "n": 12,
+  "x": [[5,0,0.5],[6,0,0.5]],
+  "l": [["我们",0,1],["爱",1,1]],
+  "u": [],
+  "w": []
 }
 ```
 
-`noteIndex` 在每个小节内从 `0` 重新开始，因此某个小节漏识或错识歌词不会通过索引机制把后续小节整体顺移。`text` 可以是一个字，也可以是多个字；`spanNotes > 1` 表示同一歌词组延续到多个连续音符。Local CLI normalization 再确定性编译为 Draft Score 现有的 `notes[].lyric`、`lyricSyllableId` 与 `lyricContinuation`。
+`l[]` 中的 `noteIndex` 在每个小节内从 `0` 重新开始，因此某个小节漏识或错识歌词不会把后续小节整体顺移。`text` 可以是一个字，也可以是多个字；`spanNotes > 1` 表示同一歌词组延续到多个连续音符。Local CLI 先把 compact tuples 展开，再确定性编译为 Draft Score 现有的 `notes[].lyric`、`lyricSyllableId` 与 `lyricContinuation`。
 
 `lyricsText` 只作为完整歌词参考文本，不能反向用于“第 i 个歌词字 = 第 i 个非休止音符”的顺序分配。视觉位置不明确时允许漏绑并给 warning，交给人工校谱修正。旧的 note-level lyric inference 仍兼容历史 fixture，但新识谱必须使用 measure-local `lyricGroups[]`。
 

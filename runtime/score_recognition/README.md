@@ -1,24 +1,39 @@
-# QwenWork Score Inference Importer
+# Recognition Pipeline v3
 
-The formal path is local and keyless:
+This subsystem converts a numbered-score image into a Draft Score without changing the teaching engine.
 
 ```text
-score image → QwenWork native inference → structured JSON
-→ Local CLI normalization → Draft Score → Human Review
+score image
+→ deterministic recognition plan
+→ one bounded visual-recognition round
+→ per-region compact JSON
+→ deterministic assembly + source coverage
+→ score normalization
+→ Draft Score
+→ human review
+→ Verified Score
 ```
 
-QwenWork creates the structured JSON described in
-`references/INFERENCE_CONTRACT.md`. The repository never sends the image to a
-model endpoint and never reads an API key.
+Preferred CLI flow:
 
 ```bash
-python3 runtime/animal_band_cli.py recognize-score \
+python3 scripts/animal_band.py prepare-score-recognition --score-image /path/to/score.png
+
+# QwenWork writes one JSON file per returned region into /tmp/inference/
+# e.g. header.json, system-01.json, system-02.json ...
+
+python3 scripts/animal_band.py check-score-inference \
   --score-image /path/to/score.png \
-  --audio /path/to/song.mp3 \
+  --recognition-plan /path/to/recognition-plan.json \
+  --inference-dir /tmp/inference
+
+python3 scripts/animal_band.py recognize-score \
+  --score-image /path/to/score.png \
   --title "Song title" \
-  --inference-input /path/to/qwenwork-score-inference.json
+  --recognition-plan /path/to/recognition-plan.json \
+  --inference-dir /tmp/inference
 ```
 
-The imported result is always `draft`. A teacher must review the notes and
-lyrics, select the singing teaching grouping, calibrate the original audio and
-explicitly verify the score.
+The planner may choose `whole_page`, `system_parallel`, or `system_highres_parallel`. The model cannot create its own crops or retry loop. Only source regions explicitly reported by the preflight gate may be read one additional time. Numeric recognition confidence is not used.
+
+Legacy aggregate `--inference-input` remains readable for existing fixtures and migrations.

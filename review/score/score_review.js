@@ -3,7 +3,8 @@ import { refreshNotePitch } from "../../classroom/core/pitch-utils.js";
 import { lyricForNote, normalizeLyricContinuations, setNoteLyric, setNoteLyricContinuation } from "../../classroom/core/lyrics-alignment.js";
 import { canMarkReviewed, collectScoreIssues, markScoreEdited, transitionToReviewed, transitionToVerified } from "../../classroom/core/score-verification.js";
 import { createScoreMeasureAlignmentTool } from "./measure_alignment_tool.js";
-import { closeReviewSession, loadScore, loadSourceImage, markReviewed, saveDraft, verifyScore } from "./adapters/local_workspace_adapter.js";
+import { closeReviewSession, loadReviewStatus, loadScore, loadSourceImage, markReviewed, saveDraft, verifyScore } from "./adapters/local_workspace_adapter.js";
+import { deleteMeasure, insertEmptyMeasure, mergeMeasureWithNext, mergeMeasureWithPrevious, splitMeasure } from "./score_structure_editor.js";
 
 let score = null;
 let songId = null;
@@ -16,8 +17,8 @@ let measureAlignmentTool = null;
 let measureAlignmentRequired = false;
 let measureAlignmentReady = true;
 let alignmentInitToken = 0;
+let scoreStructureDirty = false;
 const STATUS_LABELS = Object.freeze({ draft: "草稿", reviewed: "已审核", verified: "已验证" });
-
 
 export function jianpuDurationClass(duration) {
   if (duration <= .25) return "sixteenth";
@@ -27,399 +28,47 @@ export function jianpuDurationClass(duration) {
   if (duration >= 2) return "half";
   return "quarter";
 }
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"\']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "\'": "&#39;" })[character]);
-}
-
+function escapeHtml(value) { return String(value ?? "").replace(/[&<>"\']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "\'": "&#39;" })[character]); }
 function flattenScoreNotes(target) { return (target.measures ?? []).flatMap((measure, measureIndex) => (measure.notes ?? []).map((note, noteIndex) => ({ note, measure, measureIndex, noteIndex }))); }
-
-function canContinueLyric(noteId) {
-  const entries = flattenScoreNotes(score);
-  const index = entries.findIndex(({ note }) => note.noteId === noteId);
-  if (index < 0) return false;
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const candidate = entries[cursor].note;
-    if (candidate.rest || candidate.lyricContinuation) continue;
-    return Boolean(candidate.lyric);
-  }
-  return false;
-}
-
-export function renderJianpuNote(note, options = {}) {
-  const octaveClass = note.octave < 0 ? "low" : note.octave > 0 ? "high" : "middle";
-  const dotted = note.duration === .75 || note.duration === 1.5;
-  const holdCount = note.duration >= 2 ? Math.max(1, Math.round(note.duration) - 1) : 0;
-  const holds = holdCount ? `<span class="jianpu-hold">${Array(holdCount).fill("—").join(" ")}</span>` : "";
-  const continuation = Boolean(note.lyricContinuation);
-  const lyric = options.showLyric === false ? "" : continuation
-    ? `<em class="jianpu-lyric-continuation" title="延续上一个歌词字" aria-label="延续上一个歌词字"><span></span></em>`
-    : `<em>${escapeHtml(note.lyric || "　")}</em>`;
-  return `<span class="jianpu-note ${continuation ? "lyric-continuation" : ""} ${octaveClass} ${jianpuDurationClass(note.duration)}" style="--note-grow:${Math.max(.5, Number(note.duration) || .5)}"><span class="jianpu-sign"><span class="jianpu-number">${note.rest ? 0 : note.degree}${dotted ? "<i>·</i>" : ""}</span>${holds}</span>${lyric}</span>`;
-}
-
-export function scoreDurationLabel(duration) {
-  return new Map([[.125, "⅛拍"], [.25, "¼拍"], [.375, "⅜拍"], [.5, "½拍"], [.75, "¾拍"], [1, "1拍"], [1.5, "1½拍"], [2, "2拍"], [3, "3拍"], [4, "4拍"]]).get(Number(duration)) ?? `${duration}拍`;
-}
-
-export function recalculateScoreTiming(targetScore) {
-  let offset = 0;
-  targetScore.measures.forEach((measure) => {
-    let beat = 0;
-    measure.notes.forEach((note) => {
-      note.beat = Number(beat.toFixed(3));
-      note.startBeat = Number((offset + beat).toFixed(3));
-      beat += Number(note.duration);
-    });
-    // The source score may contain pickup, lead-in, incomplete, or extended measures.
-    // Preserve the actual notated duration instead of inserting phantom beats.
-    offset += beat;
-  });
-  return targetScore;
-}
-
-function measureBeatTotal(measure) {
-  return Number(measure.notes.reduce((total, note) => total + Number(note.duration || 0), 0).toFixed(3));
-}
-
-function expectedMeasureBeats(measure) {
-  return measure.pickup ? (Number(measure.beats) || measureBeatTotal(measure)) : score.meter.beats * 4 / score.meter.unit;
-}
-
-function renderPitchOptions(note) {
-  const rest = `<option value="0:0" ${note.rest || note.degree === 0 ? "selected" : ""}>休止 0</option>`;
-  return rest + [-3, -2, -1, 0, 1, 2, 3].map((octave) => {
-    const name = octave === 0 ? "中音" : `${octave > 0 ? "高" : "低"}${Math.abs(octave)}个八度`;
-    return `<optgroup label="${name}">${Array.from({ length: 7 }, (_, index) => {
-      const degree = index + 1;
-      return `<option value="${degree}:${octave}" ${!note.rest && note.degree === degree && note.octave === octave ? "selected" : ""}>${name} ${degree}</option>`;
-    }).join("")}</optgroup>`;
-  }).join("");
-}
-
-function renderDurationOptions(note) {
-  return [.125, .25, .375, .5, .75, 1, 1.5, 2, 3, 4].map((duration) => `<option value="${duration}" ${Number(note.duration) === duration ? "selected" : ""}>${scoreDurationLabel(duration)}</option>`).join("");
-}
-
-function renderDurationHelp() {
-  return `<details class="score-duration-help"><summary>怎么看音符长度？</summary><div class="score-duration-guide">
-    <span><b class="duration-demo sixteenth">5</b><small>¼拍<br>数字下两横</small></span><span><b class="duration-demo eighth">5</b><small>½拍<br>数字下一横</small></span><span><b class="duration-demo eighth">5·</b><small>¾拍<br>下一横＋右侧点</small></span><span><b class="duration-demo">5</b><small>1拍<br>普通数字</small></span><span><b class="duration-demo">5·</b><small>1½拍<br>右侧点</small></span><span><b class="duration-demo">5 —</b><small>2拍<br>后面一横</small></span>
-  </div></details>`;
-}
-
-function issuesForMeasure(measureIndex) {
-  return issuesBlockingMeasureConfirmation(score, measureIndex);
-}
-
-export function issuesBlockingMeasureConfirmation(targetScore, measureIndex) {
-  const structuralCodes = new Set(["INVALID_DEGREE", "INVALID_OCTAVE", "INVALID_DURATION", "LYRIC_ON_REST", "MISSING_PITCH", "BLOCKING_REVIEW_ERROR"]);
-  return collectScoreIssues(targetScore).errors.filter((item) => item.path.startsWith(`measures[${measureIndex}]`) && structuralCodes.has(item.code));
-}
-
-function renderNoteCard(note, noteIndex) {
-  const confidence = Math.round(Number(note.confidence || 0) * 100);
-  return `<article class="score-note ${confidence < 72 ? "needs-check" : ""}">
-    <button class="note-preview" data-preview-note="${note.noteId}" aria-label="试听音符">${renderJianpuNote(note)}</button>
-    <select class="score-pitch-select" data-note-field="${noteIndex}:pitch" aria-label="音高">${renderPitchOptions(note)}</select>
-    <label class="score-duration-field"><span>长度</span><select data-note-field="${noteIndex}:duration">${renderDurationOptions(note)}</select></label>
-    <label class="score-lyric-field"><span>歌词</span><input class="score-note-lyric" data-note-field="${noteIndex}:lyric" value="${escapeHtml(note.lyricContinuation ? (lyricForNote(score, note.noteId) ?? "") : (note.lyric ?? ""))}" ${note.rest || note.lyricContinuation ? "disabled" : ""}></label>
-    <label class="score-continuation-field"><input data-note-field="${noteIndex}:lyricContinuation" type="checkbox" ${note.lyricContinuation ? "checked" : ""} ${note.rest || (!note.lyricContinuation && !canContinueLyric(note.noteId)) ? "disabled" : ""}> <span>${note.lyricContinuation ? `延续“${escapeHtml(lyricForNote(score, note.noteId) ?? "上一个字")}”` : "一字多音续音"}</span></label>
-    <small>${escapeHtml(note.absolutePitch ?? "休止")} · 第 ${note.beat} 拍</small>
-    <button class="score-note-delete" data-delete-note="${noteIndex}">删除</button>
-    ${confidence < 72 ? `<i>请核对 ${confidence}%</i>` : ""}
-  </article>`;
-}
-
-function renderMeasureEditor() {
-  const measure = score.measures[currentMeasureIndex];
-  const actual = measureBeatTotal(measure);
-  const expected = expectedMeasureBeats(measure);
-  const valid = issuesForMeasure(currentMeasureIndex).length === 0;
-  document.querySelector("#measure-editor").innerHTML = `<article class="score-measure-card">
-    <div class="score-measure-head"><div><strong>第 ${measure.number} 小节</strong><small>当前 ${actual} 拍 / 拍号通常 ${expected} 拍</small></div><span class="score-review-state ${confirmedMeasures.has(currentMeasureIndex) ? "done" : ""}">${confirmedMeasures.has(currentMeasureIndex) ? "已确认" : "待确认"}</span></div>
-    ${Math.abs(actual - expected) < .001 ? "" : `<div class="measure-warning">拍数提示：当前 ${actual} 拍，拍号通常为 ${expected} 拍；如原谱如此可直接确认。</div>`}
-    <div class="score-note-row">${measure.notes.map(renderNoteCard).join("")}<button class="score-add-note" data-add-note>＋ 添加音符</button></div>${renderDurationHelp()}
-  </article>`;
-  const confirm = document.querySelector("#confirm-measure");
-  confirm.disabled = !valid;
-  confirm.textContent = confirmedMeasures.has(currentMeasureIndex) ? "已确认，继续下一节" : "确认这个小节";
-}
-
-function renderWarnings() {
-  const issues = collectScoreIssues(score);
-  const all = [...issues.errors, ...issues.warnings];
-  document.querySelector("#warnings").innerHTML = `${actionMessage ? `<div class="action-message">${escapeHtml(actionMessage)}</div>` : ""}${all.map((item) => `<div class="warning ${item.severity}"><strong>${escapeHtml(item.code)}</strong><span>${escapeHtml(item.message)}</span><small>${escapeHtml(item.path)}</small></div>`).join("") || `<div class="no-warning">当前没有校验问题。</div>`}`;
-}
-
-function renderPreviewAndNavigation() {
-  document.querySelector("#score-preview-grid").innerHTML = score.measures.map((measure, index) => `<button class="score-preview-measure ${index === currentMeasureIndex ? "active" : ""} ${confirmedMeasures.has(index) ? "done" : ""}" data-select-measure="${index}"><small>${confirmedMeasures.has(index) ? "✓" : measure.number}</small><div>${measure.notes.map((note) => renderJianpuNote(note)).join("")}</div></button>`).join("");
-  document.querySelector("#measure-nav").innerHTML = score.measures.map((measure, index) => `<button class="${index === currentMeasureIndex ? "active" : ""} ${confirmedMeasures.has(index) ? "done" : ""}" data-select-measure="${index}" aria-label="第 ${measure.number} 小节">${confirmedMeasures.has(index) ? "✓" : measure.number}</button>`).join("");
-  document.querySelector("#previous-measure").disabled = currentMeasureIndex === 0;
-  document.querySelector("#next-measure").disabled = currentMeasureIndex === score.measures.length - 1;
-}
-
-export function scoreReviewNextStep(targetScore, confirmedCount) {
-  if (targetScore.verificationStatus === "verified") return "乐谱已确认，可以返回备课。";
-  if (targetScore.verificationStatus === "reviewed") return "校对已保存，可以确认乐谱。";
-  if (confirmedCount < targetScore.measures.length) return `请继续确认小节：${confirmedCount}/${targetScore.measures.length}`;
-  const gate = canMarkReviewed(targetScore);
-  if (gate.errors.some((item) => item.code === "INVALID_TEACHING_GROUP")) return "下一步：请选择演唱教学每几小节一段。";
-  return gate.allowed ? "小节和演唱教学分段已完成，可以完成校对。" : "请完成上方标出的校对项目。";
-}
-
-function renderStatus() {
-  const status = score.verificationStatus;
-  const teacherLabel = { draft: "待检查", reviewed: "等待最终确认", verified: "乐谱已确认" }[status];
-  const displayLabel = teacherMode ? teacherLabel : STATUS_LABELS[status] ?? status;
-  document.querySelector("#status-summary").innerHTML = `<span class="status-pill ${status}">${displayLabel}</span>${!teacherMode && score.verifiedBy ? `<small>${escapeHtml(score.verifiedBy)} · ${escapeHtml(score.verifiedAt)}</small>` : ""}`;
-  document.querySelector("#verification-label").textContent = teacherMode ? displayLabel : `当前状态：${displayLabel}`;
-  const allConfirmed = confirmedMeasures.size === score.measures.length;
-  document.querySelector("#mark-reviewed").disabled = !allConfirmed || !canMarkReviewed(score).allowed || status !== "draft";
-  document.querySelector("#mark-verified").disabled = status !== "reviewed" || (measureAlignmentRequired && !measureAlignmentReady);
-  document.querySelector("#mark-reviewed").hidden = teacherMode && status !== "draft";
-  document.querySelector("#mark-verified").hidden = teacherMode && status !== "reviewed";
-  document.querySelector("#download-score").disabled = status !== "verified";
-  document.querySelector("#save-draft").disabled = !songId;
-  document.querySelector("#return-to-preparation").hidden = !teacherMode || status !== "verified";
-  const nextStep = scoreReviewNextStep(score, confirmedMeasures.size);
-  document.querySelector("#verification-detail").textContent = status === "reviewed" && measureAlignmentRequired && !measureAlignmentReady
-    ? "乐谱已审核。请在下方“原曲小节核对”中人工框定第一个完整教学小节段，再确认乐谱。"
-    : nextStep;
-}
-
-async function syncMeasureAlignmentTool() {
-  if (!score || !songId) return;
-  const container = document.querySelector("#score-measure-alignment");
-  if (!container) return;
-  if (measureAlignmentTool) { measureAlignmentTool.updateScore(score); return; }
-  const token = ++alignmentInitToken;
-  try {
-    const tool = await createScoreMeasureAlignmentTool(container, {
-      songId,
-      score,
-      onStateChange(state) {
-        measureAlignmentRequired = Boolean(state.required);
-        measureAlignmentReady = Boolean(state.ready);
-        renderStatus();
-      }
-    });
-    if (token !== alignmentInitToken) return;
-    measureAlignmentTool = tool;
-    measureAlignmentRequired = Boolean(tool?.required?.());
-    measureAlignmentReady = Boolean(tool?.ready?.() ?? true);
-    renderStatus();
-  } catch (error) {
-    container.innerHTML = `<div class="alignment-error">原曲小节核对无法启动：${escapeHtml(error.message)}</div>`;
-    measureAlignmentRequired = false;
-    measureAlignmentReady = true;
-    renderStatus();
-  }
-}
-
-function render() {
-  if (!score) return;
-  currentMeasureIndex = Math.max(0, Math.min(currentMeasureIndex, score.measures.length - 1));
-  document.querySelector("#empty-state").hidden = true;
-  document.querySelector("#review-app").hidden = false;
-  document.querySelector("#score-title").textContent = score.title;
-  document.querySelector("#review-progress").textContent = `校对第 ${currentMeasureIndex + 1} / ${score.measures.length} 小节`;
-  document.querySelector("#metadata").innerHTML = `<label>曲名<input data-meta="title" value="${escapeHtml(score.title)}"></label><label>1 = 主音<input data-meta="tonic" value="${escapeHtml(score.tonic)}"></label><label>拍号<input data-meta="meter.beats" type="number" min="1" max="12" value="${score.meter.beats}"></label><label>分母<select data-meta="meter.unit">${[2, 4, 8, 16].map((unit) => `<option ${unit === score.meter.unit ? "selected" : ""}>${unit}</option>`).join("")}</select></label><label>速度<input data-meta="bpm" type="number" min="36" max="240" value="${score.bpm}"> 拍/分钟</label><label>演唱教学分段<select data-meta="teachingConfig.singingMeasuresPerUnit"><option value="">请选择每几小节一段</option>${[1,2,3,4,5,6,7,8].map((count) => `<option value="${count}" ${count === Number(score.teachingConfig?.singingMeasuresPerUnit) ? "selected" : ""}>每 ${count} 小节一段</option>`).join("")}</select><small>由老师人工选择；系统只按选择结果机械分段，不判断乐句。</small></label>`;
-  renderPreviewAndNavigation(); renderWarnings(); renderMeasureEditor(); renderStatus(); bindRenderedEvents();
-  syncMeasureAlignmentTool();
-}
-
-function editScore(mutator, measureIndex = null) {
-  const wasVerified = score.verificationStatus === "verified";
-  mutator();
-  if (measureIndex !== null) confirmedMeasures.delete(measureIndex);
-  persistConfirmedMeasures();
-  markScoreEdited(score);
-  recalculateScoreTiming(score);
-  actionMessage = wasVerified ? "已修改：状态已自动从“已验证”降级为“已审核”，请保存。" : "修改尚未写回，请保存。";
-  render();
-}
-
-function updateNote(noteIndex, field, input) {
-  const note = score.measures[currentMeasureIndex].notes[noteIndex];
-  editScore(() => {
-    if (field === "pitch") {
-      const [degree, octave] = input.value.split(":").map(Number);
-      note.degree = degree; note.octave = degree === 0 ? 0 : octave; note.rest = degree === 0;
-      if (note.rest) setNoteLyric(score, note.noteId, null);
-      refreshNotePitch(note, score);
-    } else if (field === "duration") note.duration = Number(input.value);
-    else if (field === "lyric") setNoteLyric(score, note.noteId, input.value, { syllableId: note.lyricSyllableId });
-    else if (field === "lyricContinuation") setNoteLyricContinuation(score, note.noteId, input.checked);
-    note.confidence = 1;
-  }, currentMeasureIndex);
-}
-
-function bindRenderedEvents() {
-  document.querySelectorAll("[data-select-measure]").forEach((button) => button.addEventListener("click", () => { currentMeasureIndex = Number(button.dataset.selectMeasure); actionMessage = ""; render(); }));
-  document.querySelectorAll("[data-note-field]").forEach((input) => input.addEventListener("change", () => { const [noteIndex, field] = input.dataset.noteField.split(":"); updateNote(Number(noteIndex), field, input); }));
-  document.querySelectorAll("[data-preview-note]").forEach((button) => button.addEventListener("click", () => { const entry = flattenScoreNotes(score).find(({ note }) => note.noteId === button.dataset.previewNote); if (entry) playNote(entry.note); }));
-  document.querySelectorAll("[data-delete-note]").forEach((button) => button.addEventListener("click", () => editScore(() => {
-    score.measures[currentMeasureIndex].notes.splice(Number(button.dataset.deleteNote), 1);
-  }, currentMeasureIndex)));
-  document.querySelector("[data-add-note]")?.addEventListener("click", () => editScore(() => {
-    const measure = score.measures[currentMeasureIndex];
-    const previous = measure.notes.at(-1);
-    const used = new Set(flattenScoreNotes(score).map(({ note }) => note.noteId));
-    let sequence = measure.notes.length + 1;
-    let noteId = `m${String(measure.number).padStart(3, "0")}_n${String(sequence).padStart(3, "0")}`;
-    while (used.has(noteId)) { sequence += 1; noteId = `m${String(measure.number).padStart(3, "0")}_n${String(sequence).padStart(3, "0")}`; }
-    const note = { noteId, degree: previous?.degree || 1, octave: previous?.octave || 0, duration: .5, beat: 0, startBeat: 0, rest: false, lyric: null, lyricSyllableId: null, lyricContinuation: false, confidence: 1 };
-    refreshNotePitch(note, score); measure.notes.push(note);
-  }, currentMeasureIndex));
-  document.querySelectorAll("[data-meta]").forEach((input) => input.addEventListener("change", () => editScore(() => {
-    if (input.dataset.meta === "teachingConfig.singingMeasuresPerUnit") { score.teachingConfig ??= {}; const selected = Number(input.value); if (Number.isInteger(selected) && selected >= 1 && selected <= 8) score.teachingConfig.singingMeasuresPerUnit = selected; else delete score.teachingConfig.singingMeasuresPerUnit; }
-    else if (input.dataset.meta === "meter.beats") score.meter.beats = Number(input.value);
-    else if (input.dataset.meta === "meter.unit") score.meter.unit = Number(input.value);
-    else if (input.dataset.meta === "bpm") score.bpm = Number(input.value);
-    else score[input.dataset.meta] = input.value;
-    score.key = `${score.tonic} ${score.mode}`;
-    flattenScoreNotes(score).forEach(({ note }) => refreshNotePitch(note, score));
-    confirmedMeasures.clear();
-  })));
-}
-
+function canContinueLyric(noteId) { const entries = flattenScoreNotes(score); const index = entries.findIndex(({ note }) => note.noteId === noteId); if (index < 0) return false; for (let cursor = index - 1; cursor >= 0; cursor -= 1) { const candidate = entries[cursor].note; if (candidate.rest || candidate.lyricContinuation) continue; return Boolean(candidate.lyric); } return false; }
+export function renderJianpuNote(note, options = {}) { const octaveClass = note.octave < 0 ? "low" : note.octave > 0 ? "high" : "middle"; const dotted = note.duration === .75 || note.duration === 1.5; const holdCount = note.duration >= 2 ? Math.max(1, Math.round(note.duration) - 1) : 0; const holds = holdCount ? `<span class="jianpu-hold">${Array(holdCount).fill("—").join(" ")}</span>` : ""; const continuation = Boolean(note.lyricContinuation); const lyric = options.showLyric === false ? "" : continuation ? `<em class="jianpu-lyric-continuation" title="延续上一个歌词字" aria-label="延续上一个歌词字"><span></span></em>` : `<em>${escapeHtml(note.lyric || "　")}</em>`; return `<span class="jianpu-note ${continuation ? "lyric-continuation" : ""} ${octaveClass} ${jianpuDurationClass(note.duration)}" style="--note-grow:${Math.max(.5, Number(note.duration) || .5)}"><span class="jianpu-sign"><span class="jianpu-number">${note.rest ? 0 : note.degree}${dotted ? "<i>·</i>" : ""}</span>${holds}</span>${lyric}</span>`; }
+export function scoreDurationLabel(duration) { return new Map([[.125, "⅛拍"], [.25, "¼拍"], [.375, "⅜拍"], [.5, "½拍"], [.75, "¾拍"], [1, "1拍"], [1.5, "1½拍"], [2, "2拍"], [3, "3拍"], [4, "4拍"]]).get(Number(duration)) ?? `${duration}拍`; }
+export function recalculateScoreTiming(targetScore) { let offset = 0; targetScore.measures.forEach((measure) => { let beat = 0; measure.notes.forEach((note) => { note.beat = Number(beat.toFixed(3)); note.startBeat = Number((offset + beat).toFixed(3)); beat += Number(note.duration); }); offset += beat; }); return targetScore; }
+function measureBeatTotal(measure) { return Number(measure.notes.reduce((total, note) => total + Number(note.duration || 0), 0).toFixed(3)); }
+function expectedMeasureBeats(measure) { return measure.pickup ? (Number(measure.beats) || measureBeatTotal(measure)) : score.meter.beats * 4 / score.meter.unit; }
+function renderPitchOptions(note) { const rest = `<option value="0:0" ${note.rest || note.degree === 0 ? "selected" : ""}>休止 0</option>`; return rest + [-3, -2, -1, 0, 1, 2, 3].map((octave) => { const name = octave === 0 ? "中音" : `${octave > 0 ? "高" : "低"}${Math.abs(octave)}个八度`; return `<optgroup label="${name}">${Array.from({ length: 7 }, (_, index) => { const degree = index + 1; return `<option value="${degree}:${octave}" ${!note.rest && note.degree === degree && note.octave === octave ? "selected" : ""}>${name} ${degree}</option>`; }).join("")}</optgroup>`; }).join(""); }
+function renderDurationOptions(note) { return [.125, .25, .375, .5, .75, 1, 1.5, 2, 3, 4].map((duration) => `<option value="${duration}" ${Number(note.duration) === duration ? "selected" : ""}>${scoreDurationLabel(duration)}</option>`).join(""); }
+function renderDurationHelp() { return `<details class="score-duration-help"><summary>怎么看音符长度？</summary><div class="score-duration-guide"><span><b class="duration-demo sixteenth">5</b><small>¼拍<br>数字下两横</small></span><span><b class="duration-demo eighth">5</b><small>½拍<br>数字下一横</small></span><span><b class="duration-demo eighth">5·</b><small>¾拍<br>下一横＋右侧点</small></span><span><b class="duration-demo">5</b><small>1拍<br>普通数字</small></span><span><b class="duration-demo">5·</b><small>1½拍<br>右侧点</small></span><span><b class="duration-demo">5 —</b><small>2拍<br>后面一横</small></span></div></details>`; }
+function issuesForMeasure(measureIndex) { return issuesBlockingMeasureConfirmation(score, measureIndex); }
+export function issuesBlockingMeasureConfirmation(targetScore, measureIndex) { const measure = targetScore?.measures?.[measureIndex]; if (measure && (!Array.isArray(measure.notes) || measure.notes.length === 0)) return [{ code: "EMPTY_MEASURE", severity: "blocking", path: `measures[${measureIndex}].notes`, message: "空小节不能确认；请添加音符、与相邻小节合并或删除该小节。" }]; const structuralCodes = new Set(["INVALID_DEGREE", "INVALID_OCTAVE", "INVALID_DURATION", "LYRIC_ON_REST", "MISSING_PITCH", "BLOCKING_REVIEW_ERROR"]); return collectScoreIssues(targetScore).errors.filter((item) => item.path.startsWith(`measures[${measureIndex}]`) && structuralCodes.has(item.code)); }
+function renderNoteCard(note, noteIndex) { return `<article class="score-note"><button class="note-preview" data-preview-note="${note.noteId}" aria-label="试听音符">${renderJianpuNote(note)}</button><select class="score-pitch-select" data-note-field="${noteIndex}:pitch" aria-label="音高">${renderPitchOptions(note)}</select><label class="score-duration-field"><span>长度</span><select data-note-field="${noteIndex}:duration">${renderDurationOptions(note)}</select></label><label class="score-lyric-field"><span>歌词</span><input class="score-note-lyric" data-note-field="${noteIndex}:lyric" value="${escapeHtml(note.lyricContinuation ? (lyricForNote(score, note.noteId) ?? "") : (note.lyric ?? ""))}" ${note.rest || note.lyricContinuation ? "disabled" : ""}></label><label class="score-continuation-field"><input data-note-field="${noteIndex}:lyricContinuation" type="checkbox" ${note.lyricContinuation ? "checked" : ""} ${note.rest || (!note.lyricContinuation && !canContinueLyric(note.noteId)) ? "disabled" : ""}> <span>${note.lyricContinuation ? `延续“${escapeHtml(lyricForNote(score, note.noteId) ?? "上一个字")}”` : "一字多音续音"}</span></label><small>${escapeHtml(note.absolutePitch ?? "休止")} · 第 ${note.beat} 拍</small><button class="score-note-delete" data-delete-note="${noteIndex}">删除</button></article>`; }
+function renderMeasureNotes(measure) { return (measure.notes ?? []).map((note, noteIndex) => renderNoteCard(note, noteIndex)).join(""); }
+function compactNoteLabel(note) { if (note?.rest || Number(note?.degree) === 0) return "0"; const degree = Number(note?.degree); const octave = Number(note?.octave) || 0; if (!Number.isInteger(degree)) return "音符"; if (octave > 0) return `${degree}↑`; if (octave < 0) return `${degree}↓`; return String(degree); }
+function renderSplitControl(measure) { const notes = measure.notes ?? []; if (notes.length < 2) return `<div class="measure-split-control disabled"><span>拆分当前小节</span><small>至少需要两个音符。</small></div>`; const options = notes.slice(0, -1).map((note, index) => `<option value="${index}">第 ${index + 1} 个音符后（${escapeHtml(compactNoteLabel(note))} ｜ ${escapeHtml(compactNoteLabel(notes[index + 1]))}）</option>`).join(""); return `<div class="measure-split-control"><label><span>拆分当前小节</span><select data-split-position>${options}</select></label><button class="button secondary compact" type="button" data-split-measure>拆分</button></div>`; }
+function renderMeasureStructureToolbar(measure) { const canDelete = score.measures.length > 1; return `<div class="measure-structure-panel"><div><strong>小节结构</strong><small>识谱漏掉或多识别小节线时，在这里人工修正。需要拆分时先选择“在哪个音符后拆分”。</small></div>${renderSplitControl(measure)}<div class="measure-structure-toolbar"><button class="button secondary compact" type="button" data-merge-previous ${currentMeasureIndex === 0 ? "disabled" : ""}>与前一小节合并</button><button class="button secondary compact" type="button" data-insert-before>前插空小节</button><button class="button secondary compact" type="button" data-insert-after>后插空小节</button><button class="button secondary compact" type="button" data-merge-next ${currentMeasureIndex >= score.measures.length - 1 ? "disabled" : ""}>与后一小节合并</button><button class="button danger compact" type="button" data-delete-measure ${canDelete ? "" : "disabled"}>删除本小节</button></div></div>`; }
+function renderMeasureEditor() { const measure = score.measures[currentMeasureIndex]; const actual = measureBeatTotal(measure); const expected = expectedMeasureBeats(measure); const valid = issuesForMeasure(currentMeasureIndex).length === 0; document.querySelector("#measure-editor").innerHTML = `<article class="score-measure-card"><div class="score-measure-head"><div><strong>第 ${measure.number} 小节</strong><small>当前 ${actual} 拍 / 拍号通常 ${expected} 拍</small></div><span class="score-review-state ${confirmedMeasures.has(currentMeasureIndex) ? "done" : ""}">${confirmedMeasures.has(currentMeasureIndex) ? "已确认" : "待确认"}</span></div>${Math.abs(actual - expected) < .001 ? "" : `<div class="measure-warning">拍数提示：当前 ${actual} 拍，拍号通常为 ${expected} 拍。若明显超拍，优先对照原图检查是否漏了小节线，可在下方“小节结构”中选择拆分位置。如原谱本来就是不完整小节，可保留。</div>`}${measure.notes.length ? "" : `<div class="measure-warning">这是空小节。请添加音符、与相邻小节合并或删除后再确认。</div>`}<div class="score-note-scroll-shell"><button class="score-note-scroll-button" type="button" data-note-scroll="left" aria-label="向左查看更多音符">‹</button><div class="score-note-row">${renderMeasureNotes(measure)}<button class="score-add-note" data-add-note>＋ 添加音符</button></div><button class="score-note-scroll-button" type="button" data-note-scroll="right" aria-label="向右查看更多音符">›</button></div>${(measure.notes?.length ?? 0) > 4 ? `<small class="score-note-scroll-hint">可横向滑动查看本小节全部音符</small>` : ""}${renderDurationHelp()}</article>`; document.querySelector("#measure-structure-editor").innerHTML = renderMeasureStructureToolbar(measure); const confirm = document.querySelector("#confirm-measure"); confirm.disabled = !valid; confirm.textContent = confirmedMeasures.has(currentMeasureIndex) ? "已确认，继续下一节" : "确认这个小节"; }
+function renderWarnings() { const issues = collectScoreIssues(score); const all = [...issues.errors, ...issues.warnings]; document.querySelector("#warnings").innerHTML = `${actionMessage ? `<div class="action-message">${escapeHtml(actionMessage)}</div>` : ""}${all.map((item) => `<div class="warning ${item.severity}"><strong>${escapeHtml(item.code)}</strong><span>${escapeHtml(item.message)}</span><small>${escapeHtml(item.path)}</small></div>`).join("") || `<div class="no-warning">当前没有校验问题。</div>`}`; }
+function renderPreviewAndNavigation() { document.querySelector("#score-preview-grid").innerHTML = score.measures.map((measure, index) => `<button class="score-preview-measure ${index === currentMeasureIndex ? "active" : ""} ${confirmedMeasures.has(index) ? "done" : ""}" data-select-measure="${index}"><small>${confirmedMeasures.has(index) ? "✓" : measure.number}</small><div>${measure.notes.map((note) => renderJianpuNote(note)).join("")}</div></button>`).join(""); document.querySelector("#measure-nav").innerHTML = score.measures.map((measure, index) => `<button class="${index === currentMeasureIndex ? "active" : ""} ${confirmedMeasures.has(index) ? "done" : ""}" data-select-measure="${index}" aria-label="第 ${measure.number} 小节">${confirmedMeasures.has(index) ? "✓" : measure.number}</button>`).join(""); document.querySelector("#previous-measure").disabled = currentMeasureIndex === 0; document.querySelector("#next-measure").disabled = currentMeasureIndex === score.measures.length - 1; }
+export function scoreReviewNextStep(targetScore, confirmedCount) { if (targetScore.verificationStatus === "verified") return "乐谱已确认，可以返回备课。"; if (targetScore.verificationStatus === "reviewed") return "校对已保存，可以确认乐谱。"; if (confirmedCount < targetScore.measures.length) return `请继续确认小节：${confirmedCount}/${targetScore.measures.length}`; const gate = canMarkReviewed(targetScore); if (gate.errors.some((item) => item.code === "INVALID_TEACHING_GROUP")) return "下一步：请选择演唱教学每几小节一段。"; return gate.allowed ? "小节和演唱教学分段已完成，可以完成校对。" : "请完成上方标出的校对项目。"; }
+function renderStatus() { const status = score.verificationStatus; const teacherLabel = { draft: "待检查", reviewed: "等待最终确认", verified: "乐谱已确认" }[status]; const displayLabel = teacherMode ? teacherLabel : STATUS_LABELS[status] ?? status; document.querySelector("#status-summary").innerHTML = `<span class="status-pill ${status}">${displayLabel}</span>${!teacherMode && score.verifiedBy ? `<small>${escapeHtml(score.verifiedBy)} · ${escapeHtml(score.verifiedAt)}</small>` : ""}`; document.querySelector("#verification-label").textContent = teacherMode ? displayLabel : `当前状态：${displayLabel}`; const allConfirmed = confirmedMeasures.size === score.measures.length; document.querySelector("#mark-reviewed").disabled = !allConfirmed || !canMarkReviewed(score).allowed || status !== "draft"; document.querySelector("#mark-verified").disabled = status !== "reviewed" || (measureAlignmentRequired && !measureAlignmentReady); document.querySelector("#mark-reviewed").hidden = teacherMode && status !== "draft"; document.querySelector("#mark-verified").hidden = teacherMode && status !== "reviewed"; document.querySelector("#download-score").disabled = status !== "verified"; document.querySelector("#save-draft").disabled = !songId; document.querySelector("#return-to-preparation").hidden = !teacherMode || status !== "verified"; const nextStep = scoreReviewNextStep(score, confirmedMeasures.size); document.querySelector("#verification-detail").textContent = status === "reviewed" && measureAlignmentRequired && !measureAlignmentReady ? "乐谱已审核。请在下方“原曲小节核对”中人工框定第一个完整教学小节段，再确认乐谱。" : nextStep; }
+async function syncMeasureAlignmentTool() { if (!score || !songId) return; const container = document.querySelector("#score-measure-alignment"); if (!container) return; if (measureAlignmentTool) { measureAlignmentTool.updateScore(score); return; } const token = ++alignmentInitToken; try { const tool = await createScoreMeasureAlignmentTool(container, { songId, score, onStateChange(state) { measureAlignmentRequired = Boolean(state.required); measureAlignmentReady = Boolean(state.ready); renderStatus(); } }); if (token !== alignmentInitToken) return; measureAlignmentTool = tool; measureAlignmentRequired = Boolean(tool?.required?.()); measureAlignmentReady = Boolean(tool?.ready?.() ?? true); renderStatus(); } catch (error) { container.innerHTML = `<div class="alignment-error">原曲小节核对无法启动：${escapeHtml(error.message)}</div>`; measureAlignmentRequired = false; measureAlignmentReady = true; renderStatus(); } }
+function render() { if (!score) return; currentMeasureIndex = Math.max(0, Math.min(currentMeasureIndex, score.measures.length - 1)); document.querySelector("#empty-state").hidden = true; document.querySelector("#review-app").hidden = false; document.querySelector("#score-title").textContent = score.title; document.querySelector("#review-progress").textContent = `校对第 ${currentMeasureIndex + 1} / ${score.measures.length} 小节`; document.querySelector("#metadata").innerHTML = `<label>曲名<input data-meta="title" value="${escapeHtml(score.title)}"></label><label>1 = 主音<input data-meta="tonic" value="${escapeHtml(score.tonic)}"></label><label>拍号<input data-meta="meter.beats" type="number" min="1" max="12" value="${score.meter.beats}"></label><label>分母<select data-meta="meter.unit">${[2,4,8,16].map((unit) => `<option ${unit === score.meter.unit ? "selected" : ""}>${unit}</option>`).join("")}</select></label><label>速度<input data-meta="bpm" type="number" min="36" max="240" value="${score.bpm}"> 拍/分钟</label><label>演唱教学分段<select data-meta="teachingConfig.singingMeasuresPerUnit"><option value="">请选择每几小节一段</option>${[1,2,3,4,5,6,7,8].map((count) => `<option value="${count}" ${count === Number(score.teachingConfig?.singingMeasuresPerUnit) ? "selected" : ""}>每 ${count} 小节一段</option>`).join("")}</select><small>由老师人工选择；系统只按选择结果机械分段，不判断乐句。</small></label>`; renderPreviewAndNavigation(); renderWarnings(); renderMeasureEditor(); renderStatus(); bindRenderedEvents(); syncMeasureAlignmentTool(); }
+function editScore(mutator, measureIndex = null) { const wasVerified = score.verificationStatus === "verified"; mutator(); if (measureIndex !== null) confirmedMeasures.delete(measureIndex); persistConfirmedMeasures(); markScoreEdited(score); recalculateScoreTiming(score); actionMessage = wasVerified ? "已修改：状态已自动从“已验证”降级为“已审核”，请保存。" : "修改尚未写回，请保存。"; render(); }
+function editScoreStructure(mutator, successMessage) { const wasVerified = score.verificationStatus === "verified"; const result = mutator() ?? {}; currentMeasureIndex = Number.isInteger(result.currentMeasureIndex) ? result.currentMeasureIndex : currentMeasureIndex; confirmedMeasures.clear(); persistConfirmedMeasures(); markScoreEdited(score); score.verificationStatus = "draft"; score.verifiedBy = null; score.verifiedAt = null; if (score.source) { score.source.humanReviewed = false; score.source.reviewedAt = null; } recalculateScoreTiming(score); scoreStructureDirty = true; measureAlignmentTool?.invalidateStructure?.(); actionMessage = `${successMessage} 后续小节已自动重新编号。结构修改尚未写回，请保存；保存后需要重新逐节确认。${wasVerified ? " 原已验证状态已撤销。" : ""}`; render(); }
+function updateNote(noteIndex, field, input) { const note = score.measures[currentMeasureIndex].notes[noteIndex]; editScore(() => { if (field === "pitch") { const [degree, octave] = input.value.split(":").map(Number); note.degree = degree; note.octave = degree === 0 ? 0 : octave; note.rest = degree === 0; if (note.rest) setNoteLyric(score, note.noteId, null); refreshNotePitch(note, score); } else if (field === "duration") note.duration = Number(input.value); else if (field === "lyric") setNoteLyric(score, note.noteId, input.value, { syllableId: note.lyricSyllableId }); else if (field === "lyricContinuation") setNoteLyricContinuation(score, note.noteId, input.checked); }, currentMeasureIndex); }
+function bindRenderedEvents() { document.querySelectorAll("[data-select-measure]").forEach((button) => button.addEventListener("click", () => { currentMeasureIndex = Number(button.dataset.selectMeasure); actionMessage = ""; render(); })); document.querySelectorAll("[data-note-scroll]").forEach((button) => button.addEventListener("click", () => { const row = document.querySelector(".score-note-row"); if (!row) return; const direction = button.dataset.noteScroll === "left" ? -1 : 1; row.scrollBy({ left: direction * Math.max(280, Math.round(row.clientWidth * .75)), behavior: "smooth" }); })); document.querySelectorAll("[data-note-field]").forEach((input) => input.addEventListener("change", () => { const [noteIndex, field] = input.dataset.noteField.split(":"); updateNote(Number(noteIndex), field, input); })); document.querySelectorAll("[data-preview-note]").forEach((button) => button.addEventListener("click", () => { const entry = flattenScoreNotes(score).find(({ note }) => note.noteId === button.dataset.previewNote); if (entry) playNote(entry.note); })); document.querySelectorAll("[data-delete-note]").forEach((button) => button.addEventListener("click", () => editScore(() => { score.measures[currentMeasureIndex].notes.splice(Number(button.dataset.deleteNote), 1); }, currentMeasureIndex))); document.querySelector("[data-split-measure]")?.addEventListener("click", () => { const select = document.querySelector("[data-split-position]"); const after = Number(select?.value); if (!Number.isInteger(after)) return; if (!window.confirm(`在第 ${after + 1} 个音符后拆成两个小节？拆分后会重新编号，并需要重新确认小节。`)) return; editScoreStructure(() => splitMeasure(score, currentMeasureIndex, after), "已拆分当前小节。"); }); document.querySelector("[data-merge-previous]")?.addEventListener("click", () => { if (!window.confirm("把当前小节与前一小节合并？")) return; editScoreStructure(() => mergeMeasureWithPrevious(score, currentMeasureIndex), "已与前一小节合并。"); }); document.querySelector("[data-merge-next]")?.addEventListener("click", () => { if (!window.confirm("把当前小节与后一小节合并？")) return; editScoreStructure(() => mergeMeasureWithNext(score, currentMeasureIndex), "已与后一小节合并。"); }); document.querySelector("[data-insert-before]")?.addEventListener("click", () => editScoreStructure(() => insertEmptyMeasure(score, currentMeasureIndex, "before"), "已在当前小节前插入空小节。")); document.querySelector("[data-insert-after]")?.addEventListener("click", () => editScoreStructure(() => insertEmptyMeasure(score, currentMeasureIndex, "after"), "已在当前小节后插入空小节。")); document.querySelector("[data-delete-measure]")?.addEventListener("click", () => { if (!window.confirm(`删除第 ${score.measures[currentMeasureIndex].number} 小节？此操作会重新编号后续小节。`)) return; editScoreStructure(() => deleteMeasure(score, currentMeasureIndex), "已删除当前小节。"); }); document.querySelector("[data-add-note]")?.addEventListener("click", () => editScore(() => { const measure = score.measures[currentMeasureIndex]; const previous = measure.notes.at(-1); const used = new Set(flattenScoreNotes(score).map(({ note }) => note.noteId)); let sequence = measure.notes.length + 1; let noteId = `m${String(measure.number).padStart(3, "0")}_n${String(sequence).padStart(3, "0")}`; while (used.has(noteId)) { sequence += 1; noteId = `m${String(measure.number).padStart(3, "0")}_n${String(sequence).padStart(3, "0")}`; } const note = { noteId, degree: previous?.degree || 1, octave: previous?.octave || 0, duration: .5, beat: 0, startBeat: 0, rest: false, lyric: null, lyricSyllableId: null, lyricContinuation: false }; refreshNotePitch(note, score); measure.notes.push(note); }, currentMeasureIndex)); document.querySelectorAll("[data-meta]").forEach((input) => input.addEventListener("change", () => editScore(() => { if (input.dataset.meta === "teachingConfig.singingMeasuresPerUnit") { score.teachingConfig ??= {}; const selected = Number(input.value); if (Number.isInteger(selected) && selected >= 1 && selected <= 8) score.teachingConfig.singingMeasuresPerUnit = selected; else delete score.teachingConfig.singingMeasuresPerUnit; } else if (input.dataset.meta === "meter.beats") score.meter.beats = Number(input.value); else if (input.dataset.meta === "meter.unit") score.meter.unit = Number(input.value); else if (input.dataset.meta === "bpm") score.bpm = Number(input.value); else score[input.dataset.meta] = input.value; score.key = `${score.tonic} ${score.mode}`; flattenScoreNotes(score).forEach(({ note }) => refreshNotePitch(note, score)); confirmedMeasures.clear(); }))); }
 function getAudioContext() { const Context = window.AudioContext || window.webkitAudioContext; return Context ? new Context() : null; }
-function scheduleNote(context, note, when, duration, volume = .15) {
-  if (note.rest || !note.frequency) return;
-  const oscillator = context.createOscillator(); const gain = context.createGain();
-  oscillator.type = "triangle"; oscillator.frequency.value = note.frequency;
-  gain.gain.setValueAtTime(volume, when); gain.gain.exponentialRampToValueAtTime(.0001, when + duration);
-  oscillator.connect(gain).connect(context.destination); oscillator.start(when); oscillator.stop(when + duration + .02);
-}
+function scheduleNote(context, note, when, duration, volume = .15) { if (note.rest || !note.frequency) return; const oscillator = context.createOscillator(); const gain = context.createGain(); oscillator.type = "triangle"; oscillator.frequency.value = note.frequency; gain.gain.setValueAtTime(volume, when); gain.gain.exponentialRampToValueAtTime(.0001, when + duration); oscillator.connect(gain).connect(context.destination); oscillator.start(when); oscillator.stop(when + duration + .02); }
 function playNote(note) { const context = getAudioContext(); if (context && !note.rest && note.frequency) scheduleNote(context, note, context.currentTime + .03, .42, .16); }
-function previewCurrentMeasure() {
-  const context = getAudioContext(); if (!context) return;
-  const beatSeconds = 60 / Math.max(36, Number(score.bpm) || 72); const start = context.currentTime + .08;
-  score.measures[currentMeasureIndex].notes.forEach((note) => scheduleNote(context, note, start + note.beat * beatSeconds, Math.max(.18, note.duration * beatSeconds * .98)));
-}
-
-function confirmCurrentMeasure() {
-  if (issuesForMeasure(currentMeasureIndex).length) return;
-  score.measures[currentMeasureIndex].notes.forEach((note) => { note.confidence = 1; });
-  confirmedMeasures.add(currentMeasureIndex);
-  persistConfirmedMeasures();
-  const next = score.measures.findIndex((_, index) => index > currentMeasureIndex && !confirmedMeasures.has(index));
-  if (next >= 0) currentMeasureIndex = next;
-  actionMessage = "当前小节已确认。"; render();
-}
-
-function downloadJson() {
-  const blob = new Blob([`${JSON.stringify(score, null, 2)}\n`], { type: "application/json" });
-  const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(blob); anchor.download = `${score.songId || "verified-score"}.verified-score.json`; anchor.click(); URL.revokeObjectURL(anchor.href);
-}
-
-async function persistScore(successMessage) {
-  if (!songId) throw new Error("当前页面未绑定 Song，只能使用调试下载。");
-  const payload = score.verificationStatus === "verified"
-    ? await verifyScore(songId, score)
-    : score.verificationStatus === "reviewed"
-      ? await markReviewed(songId, score)
-      : await saveDraft(songId, score);
-  score = normalizeLyricContinuations(payload.score);
-  actionMessage = successMessage;
-  render();
-  return payload;
-}
-
-function measureReviewSignature(measure) {
-  return JSON.stringify(measure.notes.map((note) => [note.degree, note.octave, note.duration, note.rest, note.lyric, note.lyricContinuation]));
-}
-
+function previewCurrentMeasure() { const context = getAudioContext(); if (!context) return; const beatSeconds = 60 / Math.max(36, Number(score.bpm) || 72); const start = context.currentTime + .08; score.measures[currentMeasureIndex].notes.forEach((note) => scheduleNote(context, note, start + note.beat * beatSeconds, Math.max(.18, note.duration * beatSeconds * .98))); }
+function confirmCurrentMeasure() { if (issuesForMeasure(currentMeasureIndex).length) return; confirmedMeasures.add(currentMeasureIndex); persistConfirmedMeasures(); const next = score.measures.findIndex((_, index) => index > currentMeasureIndex && !confirmedMeasures.has(index)); if (next >= 0) currentMeasureIndex = next; actionMessage = "当前小节已确认。"; render(); }
+function downloadJson() { const blob = new Blob([`${JSON.stringify(score, null, 2)}\n`], { type: "application/json" }); const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(blob); anchor.download = `${score.songId || "verified-score"}.verified-score.json`; anchor.click(); URL.revokeObjectURL(anchor.href); }
+async function persistScore(successMessage) { if (!songId) throw new Error("当前页面未绑定 Song，只能使用调试下载。"); const payload = score.verificationStatus === "verified" ? await verifyScore(songId, score) : score.verificationStatus === "reviewed" ? await markReviewed(songId, score) : await saveDraft(songId, score); score = normalizeLyricContinuations(payload.score); if (scoreStructureDirty) scoreStructureDirty = false; actionMessage = payload.measureStructureChanged ? `${successMessage} 小节结构已变化，原曲小节校准已自动作废，请重新校准。` : successMessage; render(); if (payload.measureStructureChanged) window.dispatchEvent(new CustomEvent("animal-band:score-structure-saved")); return payload; }
+function measureReviewSignature(measure) { return JSON.stringify(measure.notes.map((note) => [note.degree, note.octave, note.duration, note.rest, note.lyric, note.lyricContinuation])); }
 function confirmedStorageKey() { return songId ? `animal-band:score-review:${songId}` : null; }
-
-function persistConfirmedMeasures() {
-  const key = confirmedStorageKey();
-  if (!key || typeof localStorage === "undefined" || !score) return;
-  const value = Object.fromEntries([...confirmedMeasures].map((index) => [index, measureReviewSignature(score.measures[index])]));
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
-function restoreConfirmedMeasures() {
-  const key = confirmedStorageKey();
-  if (!key || typeof localStorage === "undefined") return new Set();
-  try {
-    const saved = JSON.parse(localStorage.getItem(key) || "{}");
-    return new Set(score.measures.map((measure, index) => saved[index] === measureReviewSignature(measure) ? index : null).filter((index) => index !== null));
-  } catch { return new Set(); }
-}
-
-function loadScoreDocument(document) {
-  score = normalizeLyricContinuations(structuredClone(document));
-  score.teachingConfig ??= {};
-  if (!Array.isArray(score.measures) || !score.measures.length) throw new Error("已验证乐谱缺少小节数据。");
-  currentMeasureIndex = 0;
-  confirmedMeasures = score.verificationStatus === "draft" ? restoreConfirmedMeasures() : new Set(score.measures.map((_, index) => index));
-  actionMessage = "已载入乐谱结构数据。";
-  render();
-}
-
-function showSourceImage(url) {
-  const image = document.querySelector("#source-image");
-  image.src = url;
-  image.style.display = "block";
-  document.querySelector("#source-empty").hidden = true;
-}
-
-function bootstrap() {
-  const params = new URLSearchParams(location.search);
-  if (!params.has("songId") && !params.has("score")) {
-    const teacherHome = location.protocol === "file:"
-      ? "http://127.0.0.1:4175/app/teacher/#/songs?grade=1-2"
-      : "/app/teacher/#/songs?grade=1-2";
-    location.replace(teacherHome);
-    return;
-  }
-  document.querySelector("#score-file").addEventListener("change", async (event) => {
-    try {
-      loadScoreDocument(JSON.parse(await event.target.files[0].text()));
-    } catch (error) {
-      score = null; document.querySelector("#review-app").hidden = true; document.querySelector("#empty-state").hidden = false;
-      document.querySelector("#empty-state").innerHTML = `<strong>JSON 无法载入</strong><span>${escapeHtml(error.message)}</span>`;
-    }
-  });
-  document.querySelector("#image-file").addEventListener("change", (event) => showSourceImage(URL.createObjectURL(event.target.files[0])));
-  document.querySelector("#previous-measure").addEventListener("click", () => { currentMeasureIndex = Math.max(0, currentMeasureIndex - 1); render(); });
-  document.querySelector("#next-measure").addEventListener("click", () => { currentMeasureIndex = Math.min(score.measures.length - 1, currentMeasureIndex + 1); render(); });
-  document.querySelector("#preview-measure").addEventListener("click", previewCurrentMeasure);
-  document.querySelector("#confirm-measure").addEventListener("click", confirmCurrentMeasure);
-  document.querySelector("#save-draft").addEventListener("click", () => persistScore("当前乐谱已保存到 Song。").catch((error) => { actionMessage = error.message; render(); }));
-  document.querySelector("#mark-reviewed").addEventListener("click", async () => {
-    const result = transitionToReviewed(score);
-    if (!result.allowed) { actionMessage = result.errors.map((item) => item.message).join(" "); return render(); }
-    try { await persistScore("已审核乐谱已保存到 Song。"); } catch (error) { actionMessage = error.message; render(); }
-  });
-  document.querySelector("#mark-verified").addEventListener("click", async () => {
-    const result = transitionToVerified(score, score.verifiedBy || "teacher-review");
-    if (!result.allowed) { actionMessage = result.errors.map((item) => item.message).join(" "); return render(); }
-    try { await persistScore("验证完成，verified-score.json 已保存。"); } catch (error) { score.verificationStatus = "reviewed"; score.verifiedBy = null; score.verifiedAt = null; actionMessage = error.message; render(); }
-  });
-  document.querySelector("#download-score").addEventListener("click", downloadJson);
-  songId = params.get("songId");
-  teacherMode = params.get("mode") === "teacher";
-  const requestedReturn = params.get("return");
-  if (requestedReturn?.startsWith("/app/teacher/")) returnPath = requestedReturn;
-  document.querySelector("#go-back").addEventListener("click", () => {
-    if (teacherMode) location.href = returnPath;
-    else if (history.length > 1) history.back();
-    else location.href = "/app/content-factory/";
-  });
-  if (teacherMode) {
-    document.body.classList.add("teacher-mode");
-    document.querySelector("#review-context").textContent = "动物乐队 · 教师备课";
-    document.querySelector("#review-title").textContent = "检查乐谱";
-    document.querySelector("#mark-reviewed").textContent = "完成校对";
-    document.querySelector("#mark-verified").textContent = "确认乐谱";
-    document.querySelector("#return-to-preparation").href = returnPath;
-  }
-  if (songId) loadSourceImage(songId).then(showSourceImage).catch(() => {});
-  if (songId) loadScore(songId).then(loadScoreDocument).catch((error) => {
-    document.querySelector("#empty-state").innerHTML = `<strong>乐谱无法载入</strong><span>${escapeHtml(error.message)}</span>`;
-  });
-}
-
+function persistConfirmedMeasures() { const key = confirmedStorageKey(); if (!key || typeof localStorage === "undefined" || !score) return; const value = Object.fromEntries([...confirmedMeasures].map((index) => [index, measureReviewSignature(score.measures[index])])); localStorage.setItem(key, JSON.stringify(value)); }
+function restoreConfirmedMeasures() { const key = confirmedStorageKey(); if (!key || typeof localStorage === "undefined") return new Set(); try { const saved = JSON.parse(localStorage.getItem(key) || "{}"); return new Set(score.measures.map((measure, index) => saved[index] === measureReviewSignature(measure) ? index : null).filter((index) => index !== null)); } catch { return new Set(); } }
+function loadScoreDocument(document) { score = normalizeLyricContinuations(structuredClone(document)); score.teachingConfig ??= {}; if (!Array.isArray(score.measures) || !score.measures.length) throw new Error("已验证乐谱缺少小节数据。"); currentMeasureIndex = 0; confirmedMeasures = score.verificationStatus === "draft" ? restoreConfirmedMeasures() : new Set(score.measures.map((_, index) => index)); scoreStructureDirty = false; actionMessage = "已载入乐谱结构数据。"; render(); }
+function showSourceImage(url) { const image = document.querySelector("#source-image"); image.src = url; image.style.display = "block"; document.querySelector("#source-empty").hidden = true; }
+async function bootstrap() { const params = new URLSearchParams(location.search); const debugMode = params.get("debug") === "1"; let sessionStatus = null; if (!params.has("songId")) { try { sessionStatus = await loadReviewStatus(); } catch { document.querySelector("#empty-state").innerHTML = `<strong>打开方式错误</strong><span>此页面必须通过 Animal Band 的 open-score-review 运行端口进入。请返回千问重新打开“检查乐谱”，并使用返回的 http://localhost:3000/ 根地址。</span>`; if (debugMode) document.querySelector(".developer-tools")?.removeAttribute("hidden"); return; } } if (debugMode) document.querySelector(".developer-tools")?.removeAttribute("hidden"); document.querySelector("#score-file").addEventListener("change", async (event) => { try { loadScoreDocument(JSON.parse(await event.target.files[0].text())); } catch (error) { score = null; document.querySelector("#review-app").hidden = true; document.querySelector("#empty-state").hidden = false; document.querySelector("#empty-state").innerHTML = `<strong>JSON 无法载入</strong><span>${escapeHtml(error.message)}</span>`; } }); document.querySelector("#image-file").addEventListener("change", (event) => showSourceImage(URL.createObjectURL(event.target.files[0]))); const layout = document.querySelector(".score-review-layout"); const sourceToggle = document.querySelector("#toggle-source-panel"); sourceToggle?.addEventListener("click", () => { const collapsed = layout?.classList.toggle("source-collapsed"); sourceToggle.textContent = collapsed ? "显示原谱" : "收起原谱"; sourceToggle.setAttribute("aria-expanded", collapsed ? "false" : "true"); }); document.querySelector("#source-image")?.addEventListener("click", (event) => { event.currentTarget.classList.toggle("zoomed"); document.body.classList.toggle("source-image-zoomed", event.currentTarget.classList.contains("zoomed")); }); document.querySelector("#previous-measure").addEventListener("click", () => { currentMeasureIndex = Math.max(0, currentMeasureIndex - 1); render(); }); document.querySelector("#next-measure").addEventListener("click", () => { currentMeasureIndex = Math.min(score.measures.length - 1, currentMeasureIndex + 1); render(); }); document.querySelector("#preview-measure").addEventListener("click", previewCurrentMeasure); document.querySelector("#confirm-measure").addEventListener("click", confirmCurrentMeasure); document.querySelector("#save-draft").addEventListener("click", () => persistScore("当前乐谱已保存到 Song。").catch((error) => { actionMessage = error.message; render(); })); document.querySelector("#mark-reviewed").addEventListener("click", async () => { const result = transitionToReviewed(score); if (!result.allowed) { actionMessage = result.errors.map((item) => item.message).join(" "); return render(); } try { await persistScore("已审核乐谱已保存到 Song。"); } catch (error) { actionMessage = error.message; render(); } }); document.querySelector("#mark-verified").addEventListener("click", async () => { const result = transitionToVerified(score, score.verifiedBy || "teacher-review"); if (!result.allowed) { actionMessage = result.errors.map((item) => item.message).join(" "); return render(); } try { await persistScore("验证完成，verified-score.json 已保存。"); } catch (error) { score.verificationStatus = "reviewed"; score.verifiedBy = null; score.verifiedAt = null; actionMessage = error.message; render(); } }); document.querySelector("#download-score").addEventListener("click", downloadJson); songId = params.get("songId") || globalThis.__ANIMAL_BAND_REVIEW_SESSION__?.songId || sessionStatus?.songId || null; teacherMode = params.get("mode") === "teacher" || Boolean(sessionStatus); const requestedReturn = params.get("return"); if (requestedReturn?.startsWith("/app/teacher/")) returnPath = requestedReturn; document.querySelector("#go-back").addEventListener("click", () => { if (teacherMode) location.href = returnPath; else if (history.length > 1) history.back(); else location.href = "/app/content-factory/"; }); if (teacherMode) { document.body.classList.add("teacher-mode"); document.querySelector("#review-context").textContent = "动物乐队 · 教师备课"; document.querySelector("#review-title").textContent = "检查乐谱"; document.querySelector("#mark-reviewed").textContent = "完成校对"; document.querySelector("#mark-verified").textContent = "确认乐谱"; document.querySelector("#return-to-preparation").href = returnPath; } if (songId) loadSourceImage(songId).then(showSourceImage).catch(() => {}); if (songId) loadScore(songId).then(loadScoreDocument).catch((error) => { document.querySelector("#empty-state").innerHTML = `<strong>乐谱无法载入</strong><span>${escapeHtml(error.message)}</span>`; }); }
 if (typeof document !== "undefined") bootstrap();

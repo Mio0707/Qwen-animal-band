@@ -151,15 +151,6 @@ def apply_measure_lyric_groups(
             ))
             continue
 
-        confidence = round(max(0, min(1, as_number(raw_group.get("confidence"), 1.0))), 3)
-        if confidence < 0.72:
-            warnings.append(warning(
-                "LOW_LYRIC_ALIGNMENT_CONFIDENCE",
-                "warning",
-                f"{path}.confidence",
-                "歌词与音符的视觉对应置信度较低，请人工核对。",
-            ))
-
         lyric_syllable_index += 1
         syllable_id = f"syllable_{lyric_syllable_index:03d}"
         root = normalized_notes[note_index]
@@ -178,6 +169,131 @@ def apply_measure_lyric_groups(
     return lyric_syllable_index, recognized
 
 
+def expand_compact_inference(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Expand compact QwenWork transcription into the legacy verbose shape.
+
+    Supports both whole-page compact v1 and layout-aware system v1. System v1 is
+    flattened deterministically in source order before note expansion, so the model
+    never has to merge or globally renumber independently recognized systems.
+    """
+    if not isinstance(candidate, dict):
+        return candidate
+
+    if candidate.get("schema") == "animal-band-score-systems-v1":
+        flattened = dict(candidate)
+        flattened["schema"] = "animal-band-score-compact-v1"
+        flattened_measures: list[dict[str, Any]] = []
+        warnings = list(candidate.get("warnings") or [])
+        next_number = 1
+        systems = [item for item in candidate.get("systems") or [] if isinstance(item, dict)]
+        systems.sort(key=lambda item: integer_field(item.get("systemIndex")) or 10_000)
+        for system in systems:
+            system_index = integer_field(system.get("systemIndex"))
+            for raw_measure in system.get("measures") or []:
+                if not isinstance(raw_measure, dict):
+                    continue
+                measure = dict(raw_measure)
+                supplied = integer_field(measure.get("n", measure.get("number")))
+                if supplied is not None and supplied >= next_number:
+                    number = supplied
+                else:
+                    number = next_number
+                measure["n"] = number
+                next_number = number + 1
+                flattened_measures.append(measure)
+            for message in system.get("w") or []:
+                if str(message).strip():
+                    warnings.append(f"system {system_index or '?'}: {str(message).strip()}")
+        flattened["measures"] = flattened_measures
+        flattened["warnings"] = warnings
+        flattened.pop("systems", None)
+        candidate = flattened
+
+    if candidate.get("schema") not in {"animal-band-score-compact-v1", "compact-v1"}:
+        return candidate
+
+    expanded = dict(candidate)
+    raw_meter = candidate.get("meter")
+    if isinstance(raw_meter, str) and "/" in raw_meter:
+        left, right = raw_meter.split("/", 1)
+        try:
+            expanded["meter"] = {"beats": int(left), "unit": int(right)}
+        except ValueError:
+            pass
+    elif isinstance(raw_meter, (list, tuple)) and len(raw_meter) >= 2:
+        expanded["meter"] = {"beats": raw_meter[0], "unit": raw_meter[1]}
+
+    expanded_measures = []
+    compact_warnings = list(candidate.get("warnings") or [])
+    for measure_index, raw_measure in enumerate(candidate.get("measures") or []):
+        if not isinstance(raw_measure, dict):
+            continue
+        raw_notes = raw_measure.get("x") if isinstance(raw_measure.get("x"), list) else raw_measure.get("notes")
+        notes = []
+        sequential_beat = 0.0
+        uncertain_indexes = set()
+        for value in raw_measure.get("u") or []:
+            try:
+                uncertain_indexes.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        for note_index, raw_note in enumerate(raw_notes or []):
+            if isinstance(raw_note, dict):
+                notes.append(raw_note)
+                sequential_beat = max(
+                    sequential_beat,
+                    as_number(raw_note.get("beat"), sequential_beat) + as_number(raw_note.get("duration"), 1),
+                )
+                continue
+            if not isinstance(raw_note, (list, tuple)) or len(raw_note) < 3:
+                compact_warnings.append(f"m{measure_index + 1}: note {note_index + 1} compact tuple invalid")
+                continue
+            degree, octave, duration = raw_note[0], raw_note[1], raw_note[2]
+            beat = raw_note[3] if len(raw_note) >= 4 and raw_note[3] is not None else sequential_beat
+            note = {
+                "degree": degree,
+                "octave": octave,
+                "duration": duration,
+                "beat": beat,
+                "rest": int(as_number(degree, 0)) == 0,
+            }
+            if note_index in uncertain_indexes:
+                note["_recognitionUncertain"] = True
+            notes.append(note)
+            sequential_beat = max(sequential_beat, as_number(beat, sequential_beat) + as_number(duration, 1))
+
+        raw_groups = raw_measure.get("l") if isinstance(raw_measure.get("l"), list) else raw_measure.get("lyricGroups")
+        lyric_groups = []
+        for group_index, raw_group in enumerate(raw_groups or []):
+            if isinstance(raw_group, dict):
+                lyric_groups.append(raw_group)
+                continue
+            if not isinstance(raw_group, (list, tuple)) or len(raw_group) < 3:
+                compact_warnings.append(f"m{measure_index + 1}: lyric group {group_index + 1} compact tuple invalid")
+                continue
+            lyric_groups.append({
+                "text": raw_group[0],
+                "noteIndex": raw_group[1],
+                "spanNotes": raw_group[2],
+            })
+
+        for message in raw_measure.get("w") or []:
+            if str(message).strip():
+                compact_warnings.append(f"m{raw_measure.get('n', measure_index + 1)}: {str(message).strip()}")
+        expanded_measures.append({
+            "number": raw_measure.get("n", raw_measure.get("number", measure_index + 1)),
+            "pickup": bool(raw_measure.get("p", raw_measure.get("pickup", False))),
+            "notes": notes,
+            "lyricGroups": lyric_groups,
+        })
+
+    expanded["measures"] = expanded_measures
+    expanded["warnings"] = compact_warnings
+    expanded.pop("confidence", None)
+    expanded.pop("schema", None)
+    return expanded
+
+
 def normalize_score(
     candidate: dict[str, Any],
     song_id: str,
@@ -190,6 +306,7 @@ def normalize_score(
 ) -> dict[str, Any]:
     if not isinstance(candidate, dict):
         raise ValueError("QwenWork inference 没有返回有效的乐谱对象。")
+    candidate = expand_compact_inference(candidate)
 
     warnings: list[dict[str, str]] = []
     meter, expected_measure_beats = normalize_meter(candidate.get("meter"), warnings)
@@ -211,11 +328,7 @@ def normalize_score(
     if not isinstance(raw_measures, list) or not raw_measures:
         raise ValueError("Qwen 输出中没有可用 measures。")
 
-    measure_local_lyrics = any(
-        isinstance(item, dict) and "lyricGroups" in item
-        for item in raw_measures
-    )
-
+    measure_local_lyrics = any(isinstance(item, dict) and "lyricGroups" in item for item in raw_measures)
     measures: list[dict[str, Any]] = []
     absolute_offset = 0.0
     lyric_syllable_index = 0
@@ -254,9 +367,8 @@ def normalize_score(
             duration = round(raw_duration if raw_duration > 0 else 1, 3)
             beat = round(max(0, as_number(raw_note.get("beat"), sequential_beat)), 3)
             sequential_beat = max(sequential_beat, beat + duration)
-            confidence = round(max(0, min(1, as_number(raw_note.get("confidence"), 0.5))), 3)
-            if confidence < 0.72:
-                warnings.append(warning("LOW_RECOGNITION_CONFIDENCE", "warning", f"{path}.confidence", "该音符识别置信度较低，需要人工核对。"))
+            if bool(raw_note.get("_recognitionUncertain") or raw_note.get("uncertain")):
+                warnings.append(warning("RECOGNITION_UNCERTAIN", "warning", path, "该音符视觉识别存在不确定，请人工核对。"))
 
             lyric = None
             lyric_continuation = False
@@ -298,20 +410,12 @@ def normalize_score(
                 "lyric": lyric,
                 "lyricSyllableId": lyric_syllable_id,
                 "lyricContinuation": lyric_continuation,
-                "confidence": confidence,
             })
 
         if not normalized_notes:
             continue
-
         if measure_local_lyrics:
-            lyric_syllable_index, local_lyrics = apply_measure_lyric_groups(
-                raw_measure,
-                normalized_notes,
-                measure_index,
-                warnings,
-                lyric_syllable_index,
-            )
+            lyric_syllable_index, local_lyrics = apply_measure_lyric_groups(raw_measure, normalized_notes, measure_index, warnings, lyric_syllable_index)
             recognized_lyrics.extend(local_lyrics)
 
         content_duration = round(max(note["beat"] + note["duration"] for note in normalized_notes), 3)
@@ -321,15 +425,12 @@ def normalize_score(
                 f"第 {number} 小节共 {content_duration} 拍，拍号通常为 {expected_measure_beats} 拍；如原谱如此可直接确认。",
             ))
         measures.append({"number": number, "pickup": pickup, "notes": normalized_notes})
-        # Use the actual notated content duration as the timeline source of truth.
-        # Incomplete/extended measures are legal in source material and are only warned about.
         absolute_offset += content_duration
 
     if not measures:
         raise ValueError("Qwen 输出中没有可用音符。")
 
     timestamp = recognized_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    confidence = round(max(0, min(1, as_number(candidate.get("confidence"), 0.5))), 3)
     raw_lyrics_text = candidate.get("lyricsText")
     lyrics_text = str(raw_lyrics_text).strip() if raw_lyrics_text not in (None, "") else "".join(recognized_lyrics)
     lyric_alignment_mode = "measure_local_groups" if measure_local_lyrics else "legacy_note_fields"
@@ -353,8 +454,7 @@ def normalize_score(
             "reviewedAt": None,
         },
         "recognitionMetadata": {
-            **(metadata or {}),
-            "confidence": confidence,
+            **{key: value for key, value in (metadata or {}).items() if key != "confidence"},
             "lyricAlignmentMode": lyric_alignment_mode,
         },
         "verificationStatus": "draft",

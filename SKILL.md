@@ -30,12 +30,32 @@ Do not require audio when the teacher only has a score.
 
 Use only `python3 scripts/animal_band.py <command> ...` for state changes.
 
-1. Require the numbered-score image. Require original song audio only for `SCORE_AUDIO`. Read [references/INFERENCE_CONTRACT.md](references/INFERENCE_CONTRACT.md), inspect the whole score once with QwenWork native multimodal reasoning, save the required score JSON to a temporary untracked file, then run:
-   - score only: `recognize-score --score-image <image> --title <title> --inference-input <file>`
-   - score + audio: add `--audio <audio>`.
-   Do not run model/OCR once per measure or automatically repeat recognition. Never call a model API from the repository.
+### Recognition Pipeline v3
+
+Recognition is a bounded transcription pipeline, not an open-ended agent task. **One recognition round means every planned visual region is read once; it does not mean the whole page must be one model call.** The model must never decide its own crop/retry strategy.
+
+1. Require the numbered-score image. Require original song audio only for `SCORE_AUDIO`. Read [references/INFERENCE_CONTRACT.md](references/INFERENCE_CONTRACT.md).
+   1. Run `prepare-score-recognition --score-image <image>`. The deterministic planner returns `recognitionPlan`, `strategy`, `profile`, and ordered `recognitionInputs`.
+   2. Follow the plan exactly:
+      - `whole_page`: read the returned `whole-page` image once and save `whole-page.json`.
+      - `music_systems`: read the optional `header` plus **all required system regions once in one parallel round**. Save one independent JSON file per region: `header.json`, `system-01.json`, `system-02.json`, etc. Do not ask the model to merge systems.
+   3. For every system result use the compact local schema from the inference contract. **Measure boundaries are structure, not a duration calculation:** first follow the barlines visibly printed in the source from left to right, then transcribe notes/durations/lyrics inside each resulting measure. Never split or merge measures merely because recognized durations do or do not add up to the meter. `barlineCandidates*` from the deterministic planner are advisory visual anchors only; confirm them against the image. Do not emit numeric recognition confidence. If a symbol or boundary is unclear, use `u` / warnings and continue to human review.
+   4. Run `check-score-inference --score-image <image> --recognition-plan <plan> --inference-dir <dir>`. This is the source-coverage gate.
+      - If it passes, continue immediately.
+      - If it returns `SCORE_SOURCE_COVERAGE_INCOMPLETE`, re-read **only** `repairRegionIds`, at most once per region, replace those JSON files, and run the check once more.
+      - Do not repair merely because a note/lyric is ambiguous, a duration advisory appears, or the model wants extra reassurance. Those cases go to human review. A duration mismatch must never trigger automatic measure repartitioning.
+      - Never rerun already accepted regions, never split by measure, never create ad-hoc crops, never perform cross-check loops.
+   5. Run `recognize-score --score-image <image> --title <title> --recognition-plan <plan> --inference-dir <dir>`; add `--audio <audio>` for `SCORE_AUDIO`. The repository deterministically assembles regions, globally numbers measures, expands compact notes, and writes the Draft Score.
+
+The only supported compatibility path is legacy `--inference-input <aggregate-json>`; new recognition must use the per-region directory workflow above. Source coverage means every planned source region was transcribed. A measure-duration check can detect an internal anomaly but **never proves the page is complete**.
+
 2. Read the command result's `resourceMode`, `availableActivities`, and `lockedActivities`. Say: “简谱识别完成。我已经把识别结果整理成可校对的简谱。请完成一次人工检查后再生成课堂。”
-3. Run `open-score-review --song-id <id>`. Use only the returned `reviewUrl` for “检查乐谱”; never generate or substitute another review page. If the returned page cannot be opened, stop and report the blocker. The teacher checks every measure and selects singing segmentation. The panel also includes “设置小节起点”：如果谱面前面有前奏、弱起、无歌词前导音或教材截取段，教师可以把任意已识别谱面小节设为教学上的“第1小节”；此前的小节保留在 Verified Score 中，但作为 lead-in，不进入课堂教学分段和后续原曲小节对齐。In `SCORE_AUDIO`, the same panel also requires original-audio Measure Alignment, and that alignment must start from the teacher-defined first teaching measure. In `SCORE_ONLY`, audio calibration is skipped automatically. Use the same URL in an embedded web tray when supported; otherwise open it in the local browser.
+3. Run `open-score-review --song-id <id> --port 3000` in QwenWork Web / DingTalk. **Do not preview any file from `review/score/` directly, do not invent a replacement page, do not create a reverse proxy, and do not replace the visual review with command-line/manual text review.** The bridge itself binds the preview port.
+   - The command returns `previewUrl`. In QwenWork Web / DingTalk, immediately call the webpage-app / server-port preview tool with **that exact URL**: `http://localhost:3000/`. Do not use `127.0.0.1`, do not append a path/query, and do not open a repository HTML/TMPL file. The bridge root `/` directly serves the real review UI and injects a short-lived session token into page memory; protected API/media requests carry that token explicitly. **The QwenWork preview does not depend on redirects or cookies.**
+   - Do not send the teacher a review-complete message until the webpage-app preview has actually opened successfully.
+   - In a desktop/local environment, run `open-score-review --song-id <id> --port 0` and open the returned `reviewUrl` directly.
+   - If the exact `previewUrl` cannot be opened or the root preview fails, stop and report `REVIEW_UI_UNAVAILABLE`. Do not fall back to a static file preview, a tokenized URL, a proxy, or chat/CLI score correction.
+   The teacher checks every measure and selects singing segmentation. The panel supports **measure-structure repair**: if recognition misses or invents a barline, the teacher can split a measure between notes, merge with the previous/next measure, insert an empty measure, or delete a measure. Structural edits deterministically renumber following measures, clear per-measure confirmation, invalidate stale original-audio Measure Alignment, and require review again. The panel also includes “设置小节起点”：如果谱面前面有前奏、弱起、无歌词前导音或教材截取段，教师可以把任意已识别谱面小节设为教学上的“第1小节”；此前的小节保留在 Verified Score 中，但作为 lead-in，不进入课堂教学分段和后续原曲小节对齐。In `SCORE_AUDIO`, the same panel also requires original-audio Measure Alignment, and that alignment must start from the teacher-defined first teaching measure. In `SCORE_ONLY`, audio calibration is skipped automatically.
 4. After the teacher returns, run `score-status`.
    - Always require `verificationStatus = verified`.
    - Require `measureAlignmentReady = true` only when `measureAlignmentRequired = true`.

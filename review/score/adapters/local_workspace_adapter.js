@@ -1,11 +1,13 @@
-const params = new URLSearchParams(location.search);
-const token = params.get("token") || "";
+const params = new URLSearchParams(globalThis.location?.search || "");
+const runtimeSession = globalThis.__ANIMAL_BAND_REVIEW_SESSION__ || {};
+const token = runtimeSession.token || params.get("token") || "";
 
 async function request(path, options = {}) {
-  if (!token) throw new Error("Score Review session token 缺失。");
   const separator = path.includes("?") ? "&" : "?";
-  const response = await fetch(`${path}${separator}token=${encodeURIComponent(token)}`, {
+  const target = token ? `${path}${separator}token=${encodeURIComponent(token)}` : path;
+  const response = await fetch(target, {
     ...options,
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     cache: "no-store",
   });
@@ -14,8 +16,12 @@ async function request(path, options = {}) {
   return payload.data ?? payload;
 }
 
-function asset(path) { return `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`; }
+function asset(path) {
+  if (!token) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+}
 
+export async function loadReviewStatus() { return request("/bridge/status"); }
 export async function loadScore(songId) { return (await request(`/bridge/score?songId=${encodeURIComponent(songId)}`)).score; }
 export async function saveDraft(songId, score) { return request(`/bridge/score/draft?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(score) }); }
 export async function markReviewed(songId, score) { return request(`/bridge/score/reviewed?songId=${encodeURIComponent(songId)}`, { method: "PUT", body: JSON.stringify(score) }); }
@@ -24,9 +30,7 @@ export async function verifyScore(songId, score) {
   try {
     const alignment = await loadMeasureAlignment(songId);
     if (alignment?.calibration) await saveMeasureAlignment(songId, alignment);
-  } catch {
-    // SCORE_ONLY has no alignment; verification must remain independent of audio.
-  }
+  } catch {}
   return result;
 }
 export async function loadSourceImage(songId) { return asset(`/bridge/source-image?songId=${encodeURIComponent(songId)}`); }

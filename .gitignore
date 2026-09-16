@@ -16,3 +16,5 @@ workspace/**/*.wav
 **/*-mix.wav
 *.mid
 *.midi
+workspace/recognition-prep-v3/*
+!workspace/recognition-prep-v3/.gitkeep
